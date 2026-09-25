@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Card Lab" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>Card Grade & Collection Lab</title>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Card Lab</h1>
+      <p>Private pre-grading + collection tracker</p>
+    </div>
+    <button id="installBtn" class="ghost hidden">Install</button>
+  </header>
+
+  <nav class="tabs" aria-label="Main navigation">
+    <button class="tab active" data-tab="grade">Grade</button>
+    <button class="tab" data-tab="collection">Collection</button>
+    <button class="tab" data-tab="standards">Standards</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <section id="grade" class="panel active">
+      <div class="notice">
+        <strong>Pre-grade only.</strong> This app applies published PSA/BGS/CGC/SGC standards to photo measurements and your inspection inputs. It cannot authenticate, detect every alteration, or reproduce a professional grader's judgment.
+      </div>
+
+      <div class="card-block">
+        <h2>1. Card details</h2>
+        <div class="grid two">
+          <label>Year<input id="year" inputmode="numeric" placeholder="2024" /></label>
+          <label>Brand / Set<input id="set" placeholder="Topps Chrome" /></label>
+          <label>Player / Subject<input id="subject" placeholder="Shohei Ohtani" /></label>
+          <label>Card #<input id="cardNo" placeholder="#1" /></label>
+          <label>Variation / Parallel<input id="variation" placeholder="Refractor /99" /></label>
+          <label>Category<select id="category"><option>Sports</option><option>TCG</option><option>Non-sport</option><option>Other</option></select></label>
+        </div>
+      </div>
+
+      <div class="card-block">
+        <h2>2. Photograph front and back</h2>
+        <p class="hint">Best results: card removed from sleeve, flat matte contrasting background, camera directly above, even diffused light, no glare, card fills most of frame.</p>
+        <div class="photo-grid">
+          <div class="photo-box">
+            <strong>Front</strong>
+            <input id="frontInput" type="file" accept="image/*" capture="environment" />
+            <img id="frontPreview" alt="Front preview" />
+            <div id="frontQuality" class="quality"></div>
+          </div>
+          <div class="photo-box">
+            <strong>Back</strong>
+            <input id="backInput" type="file" accept="image/*" capture="environment" />
+            <img id="backPreview" alt="Back preview" />
+            <div id="backQuality" class="quality"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-block">
+        <h2>3. Centering</h2>
+        <p class="hint">Auto-detection is a starting estimate and works best on cards with clear printed borders. Correct the four border values if the overlay/estimate is wrong. Borderless designs require manual judgment.</p>
+        <h3>Front</h3>
+        <div class="grid four centering-inputs">
+          <label>Left<input id="frontBorderL" type="number" min="0" step="0.1" value="5" /></label>
+          <label>Right<input id="frontBorderR" type="number" min="0" step="0.1" value="5" /></label>
+          <label>Top<input id="frontBorderT" type="number" min="0" step="0.1" value="5" /></label>
+          <label>Bottom<input id="frontBorderB" type="number" min="0" step="0.1" value="5" /></label>
+        </div>
+        <div class="row">
+          <button id="autoFrontCenterBtn" class="secondary">Estimate front borders</button>
+          <span id="frontCenteringReadout" class="metric"></span>
+        </div>
+        <h3>Back</h3>
+        <div class="grid four centering-inputs">
+          <label>Left<input id="backBorderL" type="number" min="0" step="0.1" value="5" /></label>
+          <label>Right<input id="backBorderR" type="number" min="0" step="0.1" value="5" /></label>
+          <label>Top<input id="backBorderT" type="number" min="0" step="0.1" value="5" /></label>
+          <label>Bottom<input id="backBorderB" type="number" min="0" step="0.1" value="5" /></label>
+        </div>
+        <div class="row">
+          <button id="autoBackCenterBtn" class="secondary">Estimate back borders</button>
+          <span id="backCenteringReadout" class="metric"></span>
+        </div>
+      </div>
+
+      <div class="card-block">
+        <h2>4. Condition inspection</h2>
+        <p class="hint">Use 10× magnification or your phone zoom with angled light for high-grade candidates. These controls intentionally cap grades when a defect is present.</p>
+        <div class="grid two">
+          <label>Corners
+            <select id="corners">
+              <option value="10">10 — appear perfect</option><option value="9.5">9.5 — minute flaw under magnification</option><option value="9" selected>9 — tiny wear/speck</option><option value="8">8 — slight visible wear</option><option value="7">7 — minor wear on multiple corners</option><option value="6">6 — fuzzy / minor ding</option><option value="5">5 — rounding / ding</option><option value="4">4 or lower — obvious damage</option>
+            </select>
+          </label>
+          <label>Edges
+            <select id="edges">
+              <option value="10">10 — appear perfect</option><option value="9.5">9.5 — microscopic speck</option><option value="9" selected>9 — tiny unobtrusive chipping</option><option value="8">8 — minor visible chipping</option><option value="7">7 — slight roughness / chipping</option><option value="6">6 — moderate roughness</option><option value="5">5 — noticeable chipping</option><option value="4">4 or lower — layering/heavy damage</option>
+            </select>
+          </label>
+          <label>Surface
+            <select id="surface">
+              <option value="10">10 — flawless under close inspection</option><option value="9.5">9.5 — extremely minor print issue</option><option value="9" selected>9 — one minor spot / tiny scratch</option><option value="8">8 — a few minor defects</option><option value="7">7 — several noticeable minor defects</option><option value="6">6 — noticeable print/scratch defects</option><option value="5">5 — gloss loss / heavier defects</option><option value="4">4 or lower — crease/scuff/serious defect</option>
+            </select>
+          </label>
+          <label>Focus / registration
+            <select id="focusScore"><option value="10">Sharp / excellent</option><option value="9" selected>Minor imperfection</option><option value="8">Slightly soft / imperfect</option><option value="7">Noticeably off</option><option value="5">Major issue</option></select>
+          </label>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="crease" /> Crease / wrinkle</label>
+          <label><input type="checkbox" id="dent" /> Dent / indentation</label>
+          <label><input type="checkbox" id="stain" /> Stain / discoloration</label>
+          <label><input type="checkbox" id="scratch" /> Noticeable scratch</label>
+          <label><input type="checkbox" id="printline" /> Print/refractor line</label>
+          <label><input type="checkbox" id="mark" /> Writing / ink / pencil mark</label>
+          <label><input type="checkbox" id="altered" /> Possible trimming/restoration/alteration</label>
+          <label><input type="checkbox" id="confirmed" /> I inspected the physical card under angled light/magnification</label>
+        </div>
+      </div>
+
+      <div class="card-block">
+        <h2>5. Estimate</h2>
+        <button id="gradeBtn" class="primary">Estimate grades</button>
+        <div id="gradeResults" class="results empty">Add photos and condition details, then estimate.</div>
+      </div>
+
+      <div class="card-block">
+        <h2>6. Value / current eBay listings</h2>
+        <div class="grid two">
+          <label>Acquisition cost ($)<input id="cost" type="number" min="0" step="0.01" /></label>
+          <label>Notes<input id="notes" placeholder="Purchased locally, box 3, etc." /></label>
+        </div>
+        <div class="row wrap">
+          <button id="ebayBtn" class="secondary">Search current eBay listings</button>
+          <button id="saveBtn" class="primary">Save to collection</button>
+          <button id="resetBtn" class="ghost">New card</button>
+        </div>
+        <p class="hint">Free mode opens a live eBay search built from this card's details. Direct in-app eBay results require an API/server connection so credentials are not exposed in the phone app.</p>
+      </div>
+    </section>
+
+    <section id="collection" class="panel">
+      <div class="collection-head">
+        <div><h2>Collection</h2><p id="collectionStats" class="hint"></p></div>
+        <input id="collectionSearch" type="search" placeholder="Search collection" />
+      </div>
+      <div id="collectionList" class="collection-list"></div>
+    </section>
+
+    <section id="standards" class="panel">
+      <div class="card-block standards">
+        <h2>Standards used</h2>
+        <p>This build uses publicly published standards as grading <em>caps/guidelines</em>. Professional graders may consider additional factors and subjective eye appeal. Standards can change; verify before submission.</p>
+        <h3>PSA</h3>
+        <p>PSA 10 requires a virtually perfect card; published centering tolerance is approximately 55/45 or better on the front and 75/25 on the back. Corners, focus, gloss, stains and printing flaws also matter.</p>
+        <a href="https://www.psacard.com/gradingstandards" target="_blank" rel="noopener">Official PSA standards</a>
+        <h3>Beckett / BGS</h3>
+        <p>BGS evaluates centering, corners, edges and surface. Published 10 centering is 50/50 on front; 9.5 allows approximately 50/50 one direction and 55/45 the other. Overall grade is not a simple average; the lowest subgrade heavily constrains the result.</p>
+        <a href="https://www.beckett.com/grading/scale" target="_blank" rel="noopener">Official Beckett scale</a>
+        <h3>CGC Cards</h3>
+        <p>CGC Pristine 10 calls for 50/50 centering and virtually flawless condition. Gem Mint 10 allows approximately 55/45 front and 75/25 reverse, with high corner/edge/surface requirements.</p>
+        <a href="https://www.cgccards.com/card-grading/grading-scale/" target="_blank" rel="noopener">Official CGC scale</a>
+        <h3>SGC</h3>
+        <p>SGC uses 1–10 with half grades plus Pristine 10 and Gem 10. Its published descriptions evaluate centering, focus, corners, surface gloss, print/refractor lines, stains and wear.</p>
+        <a href="https://www.gosgc.com/card-grading/scale" target="_blank" rel="noopener">Official SGC scale</a>
+        <p class="updated">Reference review: September 2026.</p>
+      </div>
+    </section>
+
+    <section id="settings" class="panel">
+      <div class="card-block">
+        <h2>Backup & privacy</h2>
+        <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not uploaded by this app.</p>
+        <div class="row wrap"><button id="exportBtn" class="secondary">Export backup</button><label class="file-button">Import backup<input id="importInput" type="file" accept="application/json" /></label><button id="clearBtn" class="danger">Erase local collection</button></div>
+      </div>
+      <div class="card-block">
+        <h2>Install on iPhone</h2>
+        <p>Open the hosted app in DuckDuckGo. If "Add to Home Screen" is available, use it. If not, open the same URL once in Safari, Share → Add to Home Screen → Open as Web App. After installation it launches from its own icon.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>
