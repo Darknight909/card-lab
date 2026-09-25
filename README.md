@@ -1,8 +1,9 @@
-# Card Grade & Collection Lab — PWA v1
+# Card Grade & Collection Lab — PWA v1.1
 
 A private, installable web app for iPhone that:
 
 - Captures front/back card photos from the phone camera.
+- Uses local browser OCR to suggest year, brand/set, player/subject and card number from the photos; you confirm/correct before saving.
 - Compresses and stores card photos locally in IndexedDB.
 - Estimates grades against published PSA, Beckett/BGS, CGC Cards and SGC criteria.
 - Tracks card details, acquisition cost, notes and grade estimates in a local collection.
@@ -49,3 +50,8 @@ The app uses standards as **caps/guidelines**, not as a claim of affiliation or 
 ## Privacy
 
 The v1 app has no analytics and no account system. Collection data and photos remain in the browser's local IndexedDB unless you export a backup or follow an external eBay search link.
+
+
+## Assisted identification (v1.1)
+
+The Identify button uses Tesseract.js in the browser. Card images are processed on the device and are not uploaded by Card Lab. On first use, the OCR engine/language assets are downloaded from a CDN, so internet access is required. OCR is deliberately treated as a suggestion because foil, stylized fonts, autographs, vertical text, glare and card design can reduce accuracy.

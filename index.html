@@ -16,7 +16,7 @@
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker</p>
+      <p>Private pre-grading + collection tracker · v1.1</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -63,6 +63,11 @@
             <div id="backQuality" class="quality"></div>
           </div>
         </div>
+        <div class="row wrap identify-row">
+          <button id="identifyBtn" class="secondary">Identify from photos (free)</button>
+          <span id="identifyStatus" class="hint">Uses on-device OCR. First use requires internet to load the OCR engine.</span>
+        </div>
+        <div id="identifyResults" class="identify-results hidden"></div>
       </div>
 
       <div class="card-block">
@@ -190,6 +195,7 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="app.js" defer></script>
 </body>
 </html>
