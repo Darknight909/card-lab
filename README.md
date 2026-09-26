@@ -1,4 +1,4 @@
-# Card Lab v1.2 — GitHub Pages frontend
+# Card Lab v1.3 — GitHub Pages frontend
 
 ## What changed
 - Front + back photos can now be sent to your private Cloudflare Worker for automatic card identification and visible-condition analysis.

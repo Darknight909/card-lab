@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id);
 let db, frontData=null, backData=null, lastEstimate=null, deferredPrompt=null, ocrRaw={front:'',back:''}, ocrSuggestions={}, backendAnalysis=null, ebayData=null;
-const DB='cardLabDB', STORE='cards';
+const DB='cardLabDB', STORE='cards', DRAFT_STORE='drafts';
 
 function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
 function roundHalf(n){return Math.round(n*2)/2}
@@ -9,8 +9,27 @@ function clamp(n,a,b){return Math.max(a,Math.min(b,n))}
 function pctPair(a,b){const total=a+b;if(!total)return [50,50];const p=a/total*100;return [p,100-p]}
 function worstSplit(a,b){const [x,y]=pctPair(a,b);return Math.max(x,y)}
 
-function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB,1);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(STORE)){const s=d.createObjectStore(STORE,{keyPath:'id',autoIncrement:true});s.createIndex('subject','subject')}};r.onsuccess=()=>{db=r.result;res(db)};r.onerror=()=>rej(r.error)})}
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB,2);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(STORE)){const s=d.createObjectStore(STORE,{keyPath:'id',autoIncrement:true});s.createIndex('subject','subject')}if(!d.objectStoreNames.contains(DRAFT_STORE)){d.createObjectStore(DRAFT_STORE,{keyPath:'key'})}};r.onsuccess=()=>{db=r.result;res(db)};r.onerror=()=>rej(r.error)})}
 function tx(mode='readonly'){return db.transaction(STORE,mode).objectStore(STORE)}
+function draftTx(mode='readonly'){return db.transaction(DRAFT_STORE,mode).objectStore(DRAFT_STORE)}
+function draftPut(key,value){return new Promise((res,rej)=>{const r=draftTx('readwrite').put({key,value,updatedAt:new Date().toISOString()});r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+function draftGet(key){return new Promise((res,rej)=>{const r=draftTx().get(key);r.onsuccess=()=>res(r.result?.value||null);r.onerror=()=>rej(r.error)})}
+function draftDelete(key){return new Promise((res,rej)=>{const r=draftTx('readwrite').delete(key);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+async function clearDraftPhotos(){await Promise.all([draftDelete('front'),draftDelete('back')])}
+function renderRestoredPhoto(side,o){
+  if(!o?.dataUrl)return;
+  const preview=side==='front'?'frontPreview':'backPreview', quality=side==='front'?'frontQuality':'backQuality';
+  $(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality||{score:0,glare:0,sharp:0});
+  if(side==='front')frontData=o;else backData=o;
+}
+async function restoreDraftPhotos(){
+  try{
+    const [f,b]=await Promise.all([draftGet('front'),draftGet('back')]);
+    if(f)renderRestoredPhoto('front',f);
+    if(b)renderRestoredPhoto('back',b);
+    if(f||b)toast('Saved card photos restored');
+  }catch{}
+}
 function dbAdd(v){return new Promise((res,rej)=>{const r=tx('readwrite').add(v);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 function dbPut(v){return new Promise((res,rej)=>{const r=tx('readwrite').put(v);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 function dbAll(){return new Promise((res,rej)=>{const r=tx().getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
@@ -36,7 +55,15 @@ function analyzeQuality(c){
 }
 function qualityText(q){const cls=q.score>=80?'good':q.score>=60?'warn':'bad';return `<span class="${cls}">Photo quality ${q.score}/100</span> · glare ${q.glare}% · sharpness ${q.sharp}`}
 async function handlePhoto(input,preview,quality,side){
-  const f=input.files?.[0];if(!f)return;try{const o=await compressImage(f);$(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);if(side==='front')frontData=o;else backData=o;ocrRaw[side]='';ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');lastEstimate=null;toast(`${side} photo ready`)}catch(e){toast('Could not process photo')}
+  const f=input.files?.[0];if(!f)return;
+  try{
+    const o=await compressImage(f);
+    $(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);
+    if(side==='front')frontData=o;else backData=o;
+    await draftPut(side,o);
+    ocrRaw[side]='';ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');lastEstimate=null;
+    toast(`${side} photo saved`);
+  }catch(e){toast('Could not process photo')}
 }
 
 function setIdentifyStatus(html){$('identifyStatus').innerHTML=html}
@@ -224,7 +251,7 @@ function cardQuery(){return [$('year').value,$('set').value,$('subject').value,$
 function ebaySearch(){const q=cardQuery();if(!q){toast('Add card details first');return}window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`,'_blank','noopener')}
 function currentRecord(){if(!lastEstimate)lastEstimate=companyGrades();return {createdAt:new Date().toISOString(),year:$('year').value,set:$('set').value,subject:$('subject').value,cardNo:$('cardNo').value,variation:$('variation').value,category:$('category').value,cost:+$('cost').value||0,notes:$('notes').value,front:frontData?.dataUrl||null,back:backData?.dataUrl||null,frontQuality:frontData?.quality||null,backQuality:backData?.quality||null,identification:{backend:backendAnalysis,ebay:ebayData,suggestions:ocrSuggestions,frontText:ocrRaw.front,backText:ocrRaw.back},centering:centering(),scores:baseScores(),defects:{crease:$('crease').checked,dent:$('dent').checked,stain:$('stain').checked,scratch:$('scratch').checked,printline:$('printline').checked,mark:$('mark').checked,altered:$('altered').checked,confirmed:$('confirmed').checked},estimate:lastEstimate}}
 async function saveCard(){if(!$('subject').value&&!$('set').value){toast('Add at least a subject or set');return}const id=await dbAdd(currentRecord());toast(`Saved card #${id}`);await renderCollection()}
-function resetForm(){document.querySelectorAll('#grade input[type=text],#grade input[type=number]').forEach(x=>x.value='');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).value=5);document.querySelectorAll('#grade input[type=checkbox]').forEach(x=>x.checked=false);$('corners').value=$('edges').value=$('surface').value='9';$('focusScore').value='9';$('frontPreview').style.display=$('backPreview').style.display='none';$('frontInput').value=$('backInput').value='';$('frontQuality').innerHTML=$('backQuality').innerHTML='';frontData=backData=lastEstimate=null;ocrRaw={front:'',back:''};ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');setIdentifyStatus('Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.');$('gradeResults').className='results empty';$('gradeResults').textContent='Add photos and condition details, then estimate.';updateCentering();window.scrollTo({top:0,behavior:'smooth'})}
+async function resetForm(){document.querySelectorAll('#grade input[type=text],#grade input[type=number]').forEach(x=>x.value='');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).value=5);document.querySelectorAll('#grade input[type=checkbox]').forEach(x=>x.checked=false);$('corners').value=$('edges').value=$('surface').value='9';$('focusScore').value='9';$('frontPreview').style.display=$('backPreview').style.display='none';$('frontInput').value=$('backInput').value='';$('frontQuality').innerHTML=$('backQuality').innerHTML='';frontData=backData=lastEstimate=null;ocrRaw={front:'',back:''};ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');setIdentifyStatus('Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.');$('gradeResults').className='results empty';$('gradeResults').textContent='Add photos and condition details, then estimate.';await clearDraftPhotos();updateCentering();window.scrollTo({top:0,behavior:'smooth'});toast('New card started')}
 async function renderCollection(){const all=await dbAll();const term=($('collectionSearch').value||'').toLowerCase();const rows=all.filter(c=>JSON.stringify([c.year,c.set,c.subject,c.cardNo,c.variation]).toLowerCase().includes(term)).sort((a,b)=>b.id-a.id);$('collectionStats').textContent=`${all.length} card${all.length===1?'':'s'} stored locally`;const root=$('collectionList');if(!rows.length){root.innerHTML='<div class="card-block hint">No matching cards.</div>';return}root.innerHTML=rows.map(c=>`<div class="collection-card"><img src="${c.front||''}" alt=""><div><div class="collection-title">${esc([c.year,c.subject].filter(Boolean).join(' ')||'Untitled card')}</div><div class="collection-sub">${esc([c.set,c.cardNo,c.variation].filter(Boolean).join(' · '))}</div><span class="pill">PSA ${fmtGrade(c.estimate?.psa??'-','PSA')}</span><span class="pill">BGS ${fmtGrade(c.estimate?.bgs??'-','BGS')}</span><span class="pill">CGC ${fmtGrade(c.estimate?.cgc??'-','CGC')}</span><span class="pill">SGC ${fmtGrade(c.estimate?.sgc??'-','SGC')}</span></div><div class="collection-actions"><button class="secondary" data-ebay="${c.id}">eBay</button><button class="danger" data-del="${c.id}">Delete</button></div></div>`).join('');root.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(confirm('Delete this card from the local collection?')){await dbDelete(+b.dataset.del);renderCollection()}});root.querySelectorAll('[data-ebay]').forEach(b=>b.onclick=()=>{const c=rows.find(x=>x.id===+b.dataset.ebay);const q=[c.year,c.set,c.subject,c.cardNo,c.variation].filter(Boolean).join(' ');window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`,'_blank','noopener')})}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function exportBackup(){const data=await dbAll();const blob=new Blob([JSON.stringify({version:1,exportedAt:new Date().toISOString(),cards:data},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`card-lab-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href)}
@@ -235,4 +262,4 @@ function bind(){
   $('frontInput').onchange=()=>handlePhoto($('frontInput'),'frontPreview','frontQuality','front');$('backInput').onchange=()=>handlePhoto($('backInput'),'backPreview','backQuality','back');$('autoFrontCenterBtn').onclick=()=>autoBorders('front');$('autoBackCenterBtn').onclick=()=>autoBorders('back');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).oninput=updateCentering);$('identifyBtn').onclick=identifyFromPhotos;$('gradeBtn').onclick=renderEstimate;$('ebayBtn').onclick=ebaySearch;$('saveBtn').onclick=saveCard;$('saveBackendBtn').onclick=saveBackendSettings;$('testBackendBtn').onclick=testBackend;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('installBtn').classList.add('hidden')}else toast('Use your browser Add to Home Screen option')};
 }
-(async function init(){await openDB();bind();loadBackendSettings();updateCentering();if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});})();
+(async function init(){await openDB();bind();loadBackendSettings();updateCentering();await restoreDraftPhotos();if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});})();
