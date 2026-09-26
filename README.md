@@ -1,4 +1,4 @@
-# Card Lab v1.5 — GitHub Pages frontend
+# Card Lab v1.6 — GitHub Pages frontend
 
 ## What changed
 - Front + back photos can now be sent to your private Cloudflare Worker for automatic card identification and visible-condition analysis.
@@ -23,8 +23,8 @@ Tap Test connection. Then return to Grade, take front/back photos, and tap Analy
 This remains a pre-grade estimate. Phone photos and AI cannot reliably detect every dent, micro-scratch, alteration, restoration, trimming issue, or in-hand eye-appeal factor used by professional graders.
 
 
-## v1.5
+## v1.6
 Front and back draft photos are saved to IndexedDB immediately after selection and restored automatically after app reloads. Use Reset/New Card to intentionally clear them.
 
 
-v1.5 changes: photos are Section 1, card details Section 2; analysis images are resized for transport; network/load failures retry automatically up to three times.
+v1.6 changes: photos are Section 1, card details Section 2; analysis images are resized for transport; network/load failures retry automatically up to three times.
