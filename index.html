@@ -16,7 +16,7 @@
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker · v1.3</p>
+      <p>Private pre-grading + collection tracker · v1.4</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -35,20 +35,8 @@
       </div>
 
       <div class="card-block">
-        <h2>1. Card details <span class="auto-tag">auto-filled</span></h2>
-        <div class="grid two">
-          <label>Year<input id="year" inputmode="numeric" placeholder="2024" /></label>
-          <label>Brand / Set<input id="set" placeholder="Topps Chrome" /></label>
-          <label>Player / Subject<input id="subject" placeholder="Shohei Ohtani" /></label>
-          <label>Card #<input id="cardNo" placeholder="#1" /></label>
-          <label>Variation / Parallel<input id="variation" placeholder="Refractor /99" /></label>
-          <label>Category<select id="category"><option>Sports</option><option>TCG</option><option>Non-sport</option><option>Other</option></select></label>
-        </div>
-      </div>
-
-      <div class="card-block">
-        <h2>2. Photograph front and back</h2>
-        <p class="hint">Best results: card removed from sleeve, flat matte contrasting background, camera directly above, even diffused light, no glare, card fills most of frame. Selected photos are saved locally as a draft until you tap New card.</p>
+        <h2>1. Photograph front and back</h2>
+        <p class="hint">Best results: card removed from sleeve, flat matte contrasting background, camera directly above, even diffused light, no glare, card fills most of frame.</p>
         <div class="photo-grid">
           <div class="photo-box">
             <strong>Front</strong>
@@ -68,6 +56,18 @@
           <span id="identifyStatus" class="hint">Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.</span>
         </div>
         <div id="identifyResults" class="identify-results hidden"></div>
+      </div>
+
+      <div class="card-block">
+        <h2>2. Card details <span class="auto-tag">auto-filled</span></h2>
+        <div class="grid two">
+          <label>Year<input id="year" inputmode="numeric" placeholder="2024" /></label>
+          <label>Brand / Set<input id="set" placeholder="Topps Chrome" /></label>
+          <label>Player / Subject<input id="subject" placeholder="Shohei Ohtani" /></label>
+          <label>Card #<input id="cardNo" placeholder="#1" /></label>
+          <label>Variation / Parallel<input id="variation" placeholder="Refractor /99" /></label>
+          <label>Category<select id="category"><option>Sports</option><option>TCG</option><option>Non-sport</option><option>Other</option></select></label>
+        </div>
       </div>
 
       <div class="card-block">
