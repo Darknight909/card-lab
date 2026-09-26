@@ -1,6 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id);
-let db, frontData=null, backData=null, lastEstimate=null, deferredPrompt=null, ocrRaw={front:'',back:''}, ocrSuggestions={}, backendAnalysis=null, ebayData=null;
+let db, frontData=null, backData=null, lastEstimate=null, deferredPrompt=null, ocrRaw={front:'',back:''}, ocrSuggestions={}, backendAnalysis=null, ebayData=null, marketData=null, currentCardId=null, analysisInFlight=false;
 const DB='cardLabDB', STORE='cards', DRAFT='drafts';
 
 function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
@@ -43,7 +43,7 @@ function analyzeQuality(c){
 }
 function qualityText(q){const cls=q.score>=80?'good':q.score>=60?'warn':'bad';return `<span class="${cls}">Photo quality ${q.score}/100</span> · glare ${q.glare}% · sharpness ${q.sharp}`}
 async function handlePhoto(input,preview,quality,side){
-  const f=input.files?.[0];if(!f)return;try{const o=await compressImage(f);$(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);if(side==='front')frontData=o;else backData=o;await persistDraft();ocrRaw[side]='';ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');lastEstimate=null;toast(`${side} photo ready · saved locally`)}catch(e){toast('Could not process photo')}
+  const f=input.files?.[0];if(!f)return;try{const o=await compressImage(f);$(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);if(side==='front')frontData=o;else backData=o;await persistDraft();ocrRaw[side]='';ocrSuggestions={};backendAnalysis=null;ebayData=null;marketData=null;currentCardId=null;$('identifyResults').classList.add('hidden');lastEstimate=null;await autoBorders(side,true);toast(`${side} photo ready · saved locally`);if(frontData&&backData&&!analysisInFlight)setTimeout(()=>identifyFromPhotos(),250)}catch(e){toast('Could not process photo')}
 }
 
 function setIdentifyStatus(html){$('identifyStatus').innerHTML=html}
@@ -82,7 +82,7 @@ async function testBackend(){
       const r=await fetch(`${url}/analyze`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({})});
       if(r.status===401)throw new Error('API key rejected');
     }
-    $('backendStatus').textContent=`Connected · API v${j.version||'?'}${j.ebayConfigured?' · eBay connected':''}`;
+    $('backendStatus').textContent=`Connected · API v${j.version||'?'}${j.tavilyConfigured?' · web lookup ready':''}${j.ebayConfigured?' · eBay API connected':''}`;
     toast('Cloudflare backend connected');
   }catch(e){
     $('backendStatus').textContent=`Connection failed: ${e.message||e}`;
@@ -115,11 +115,29 @@ function renderBackendSummary(a,ebay){
   $('identifyResults').innerHTML=`<div class="suggestion">${esc([i.year,i.set||i.brand,i.subject,i.cardNo?`#${i.cardNo}`:''].filter(Boolean).join(' · ')||'Card analyzed')}</div>
     <div class="hint">Identity confidence ${identConf}% · visible-condition confidence ${condConf}%${ebayMsg}</div>${review}${evidence}${notes}`;
 }
-function applyBackendAnalysis(result){
-  backendAnalysis=result.analysis||null; ebayData=result.ebay||null;
+function renderMarket(market, ebay){
+  marketData=market||null;
+  const root=$('marketResults'); if(!root)return;
+  const items=(market?.items||ebay?.items||[]).slice(0,6);
+  const searchUrl=market?.searchUrl||ebay?.searchUrl||'';
+  if(!items.length){
+    root.classList.remove('empty');
+    root.innerHTML=`<div class="hint">No embedded current listings found.${searchUrl?` <a href="${esc(searchUrl)}" target="_blank" rel="noopener">Open live eBay search</a>`:''}</div>`;
+    return;
+  }
+  root.classList.remove('empty');
+  root.innerHTML=`<div class="market-list">${items.map(x=>`<a class="market-item" href="${esc(x.url||searchUrl)}" target="_blank" rel="noopener"><strong>${esc(x.title||'eBay listing')}</strong>${x.price!=null?`<span>$${Number(x.price).toFixed(2)}</span>`:''}</a>`).join('')}</div>${searchUrl?`<div class="hint"><a href="${esc(searchUrl)}" target="_blank" rel="noopener">See full eBay search</a></div>`:''}`;
+}
+function renderConditionSummary(){
+  const c=backendAnalysis?.condition||{}; const d=c.defects||{}; const flags=Object.entries(d).filter(([,v])=>v).map(([k])=>k.replaceAll('_',' '));
+  const el=$('conditionAutoSummary'); if(!el)return;
+  el.innerHTML=`Corners ${esc(c.corners??'-')} · Edges ${esc(c.edges??'-')} · Surface ${esc(c.surface??'-')} · Focus ${esc(c.focus??'-')}${flags.length?`<br><span class="warn">Visible flags: ${esc(flags.join(', '))}</span>`:'<br><span class="good">No major visible defect flags detected in these photos.</span>'}`;
+}
+async function applyBackendAnalysis(result){
+  backendAnalysis=result.analysis||null; ebayData=result.ebay||null; marketData=result.market||null;
   const a=backendAnalysis||{}, i=a.identity||{}, c=a.condition||{}, d=c.defects||{};
-  const fields={year:i.year,set:i.set||i.brand,subject:i.subject,cardNo:i.cardNo,variation:i.variation};
-  for(const [id,val] of Object.entries(fields))if(val!==null&&val!==undefined)$(id).value=String(val);
+  const fields={year:i.year??'Unknown',set:i.set||i.brand||'Unknown',subject:i.subject||'Unknown',cardNo:i.cardNo||'Unknown',variation:i.variation||'Base / not identified'};
+  for(const [id,val] of Object.entries(fields))$(id).value=String(val);
   if(i.category&&[...$('category').options].some(o=>o.value===i.category))$('category').value=i.category;
   nearestOption('corners',c.corners);nearestOption('edges',c.edges);nearestOption('surface',c.surface);nearestOption('focusScore',c.focus);
   applyPairToBorders('front','lr',c.front?.lr);applyPairToBorders('front','tb',c.front?.tb);
@@ -127,8 +145,12 @@ function applyBackendAnalysis(result){
   $('crease').checked=!!d.crease;$('dent').checked=!!d.dent;$('stain').checked=!!d.stain;$('scratch').checked=!!d.scratch;$('printline').checked=!!d.printline;$('mark').checked=!!d.mark;$('altered').checked=!!d.possible_alteration;
   $('confirmed').checked=false;
   updateCentering();
+  renderConditionSummary();
   renderEstimate();
   renderBackendSummary(a,result.ebay);
+  renderMarket(result.market,result.ebay);
+  if($('subject').value||$('set').value||$('cardNo').value){await saveCardAutomatic();if(backendAnalysis?.needs_review&&$('saveStatus'))$('saveStatus').textContent+= ' · identification flagged for review';}
+  else if($('saveStatus'))$('saveStatus').textContent='Analysis could not identify enough information to save this card.';
 }
 async function resizeDataUrlForAnalysis(dataUrl,max=1400,q=.78){
   try{
@@ -177,7 +199,7 @@ async function identifyFromPhotos(){
     return;
   }
   try{
-    $('identifyBtn').disabled=true;
+    analysisInFlight=true;$('identifyBtn').disabled=true;
     setIdentifyStatus('<span class="spinner"></span>Preparing photos…');
     const [frontForAnalysis,backForAnalysis]=await Promise.all([
       resizeDataUrlForAnalysis(frontData.dataUrl),
@@ -185,17 +207,17 @@ async function identifyFromPhotos(){
     ]);
     setIdentifyStatus('<span class="spinner"></span>Analyzing front + back…');
     const j=await analyzeRequest(url,key,{front:frontForAnalysis,back:backForAnalysis});
-    applyBackendAnalysis(j);
+    await applyBackendAnalysis(j);
     setIdentifyStatus('Automatic analysis complete · review any low-confidence warning, then save');
     toast('Card identified and pre-graded');
   }catch(e){
     console.error(e);
     setIdentifyStatus(`Analysis failed: ${esc(e.message||String(e))}`);
     toast('Automatic analysis failed');
-  }finally{$('identifyBtn').disabled=false}
+  }finally{analysisInFlight=false;$('identifyBtn').disabled=false}
 }
 
-async function autoBorders(side){
+async function autoBorders(side,silent=false){
   const data=side==='front'?frontData:backData;if(!data){toast(`Take the ${side} photo first`);return}
   const img=new Image();img.src=data.dataUrl;await img.decode();const W=420,H=Math.round(img.height*W/img.width);const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,W,H);const d=ctx.getImageData(0,0,W,H).data;const g=new Float32Array(W*H);
   for(let i=0,j=0;i<d.length;i+=4,j++)g[j]=.299*d[i]+.587*d[i+1]+.114*d[i+2];
@@ -205,7 +227,7 @@ async function autoBorders(side){
   const peak=(arr,a,b)=>{let m=-1,mi=a;for(let i=Math.floor(a);i<Math.floor(b);i++)if(arr[i]>m){m=arr[i];mi=i}return [mi,m]};
   const [L,lm]=peak(v,W*.03,W*.28),[R,rm]=peak(v,W*.72,W*.97),[T,tm]=peak(h,H*.03,H*.28),[B,bm]=peak(h,H*.72,H*.97);
   const pre=side==='front'?'front':'back';$(pre+'BorderL').value=(L/W*100).toFixed(1);$(pre+'BorderR').value=((W-R)/W*100).toFixed(1);$(pre+'BorderT').value=(T/H*100).toFixed(1);$(pre+'BorderB').value=((H-B)/H*100).toFixed(1);
-  const conf=clamp(Math.round(((lm+rm+tm+bm)/4)/900*100),20,90);updateCentering();toast(`${side} border estimate · confidence ${conf}%`)
+  const conf=clamp(Math.round(((lm+rm+tm+bm)/4)/900*100),20,90);updateCentering();if(!silent)toast(`${side} border estimate · confidence ${conf}%`)
 }
 function centeringSide(side){const pre=side==='front'?'front':'back';const L=+$(pre+'BorderL').value||0,R=+$(pre+'BorderR').value||0,T=+$(pre+'BorderT').value||0,B=+$(pre+'BorderB').value||0;const lr=pctPair(L,R),tb=pctPair(T,B);return {L,R,T,B,lr,tb,worst:Math.max(...lr,...tb)}}
 function centering(){return {front:centeringSide('front'),back:centeringSide('back')}}
@@ -265,10 +287,11 @@ function renderEstimate(){lastEstimate=companyGrades();const e=lastEstimate;cons
 </div><div class="confidence ${q}">Confidence ${e.confidence}% · Front ${e.centering.front.lr[0].toFixed(1)}/${e.centering.front.lr[1].toFixed(1)} L/R, ${e.centering.front.tb[0].toFixed(1)}/${e.centering.front.tb[1].toFixed(1)} T/B · Back ${e.centering.back.lr[0].toFixed(1)}/${e.centering.back.lr[1].toFixed(1)} L/R, ${e.centering.back.tb[0].toFixed(1)}/${e.centering.back.tb[1].toFixed(1)} T/B.</div>${e.flags.length?'<ul class="hint">'+e.flags.map(x=>`<li>${x}</li>`).join('')+'</ul>':''}`}
 
 function cardQuery(){return [$('year').value,$('set').value,$('subject').value,$('cardNo').value,$('variation').value].filter(Boolean).join(' ').trim()}
-function ebaySearch(){const q=cardQuery();if(!q){toast('Add card details first');return}window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`,'_blank','noopener')}
-function currentRecord(){if(!lastEstimate)lastEstimate=companyGrades();return {createdAt:new Date().toISOString(),year:$('year').value,set:$('set').value,subject:$('subject').value,cardNo:$('cardNo').value,variation:$('variation').value,category:$('category').value,cost:+$('cost').value||0,notes:$('notes').value,front:frontData?.dataUrl||null,back:backData?.dataUrl||null,frontQuality:frontData?.quality||null,backQuality:backData?.quality||null,identification:{backend:backendAnalysis,ebay:ebayData,suggestions:ocrSuggestions,frontText:ocrRaw.front,backText:ocrRaw.back},centering:centering(),scores:baseScores(),defects:{crease:$('crease').checked,dent:$('dent').checked,stain:$('stain').checked,scratch:$('scratch').checked,printline:$('printline').checked,mark:$('mark').checked,altered:$('altered').checked,confirmed:$('confirmed').checked},estimate:lastEstimate}}
+function ebaySearch(){const q=cardQuery();const u=marketData?.searchUrl||ebayData?.searchUrl||(q?`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`:'');if(!u){toast('Card identity is not ready yet');return}window.open(u,'_blank','noopener')}
+function currentRecord(){if(!lastEstimate)lastEstimate=companyGrades();return {createdAt:new Date().toISOString(),year:$('year').value,set:$('set').value,subject:$('subject').value,cardNo:$('cardNo').value,variation:$('variation').value,category:$('category').value,cost:+$('cost').value||0,notes:$('notes').value,front:frontData?.dataUrl||null,back:backData?.dataUrl||null,frontQuality:frontData?.quality||null,backQuality:backData?.quality||null,identification:{backend:backendAnalysis,ebay:ebayData,market:marketData,suggestions:ocrSuggestions,frontText:ocrRaw.front,backText:ocrRaw.back},centering:centering(),scores:baseScores(),defects:{crease:$('crease').checked,dent:$('dent').checked,stain:$('stain').checked,scratch:$('scratch').checked,printline:$('printline').checked,mark:$('mark').checked,altered:$('altered').checked,confirmed:$('confirmed').checked},estimate:lastEstimate}}
 async function saveCard(){if(!$('subject').value&&!$('set').value){toast('Add at least a subject or set');return}const id=await dbAdd(currentRecord());toast(`Saved card #${id}`);await renderCollection()}
-async function resetForm(){document.querySelectorAll('#grade input[type=text],#grade input[type=number]').forEach(x=>x.value='');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).value=5);document.querySelectorAll('#grade input[type=checkbox]').forEach(x=>x.checked=false);$('corners').value=$('edges').value=$('surface').value='9';$('focusScore').value='9';$('frontPreview').style.display=$('backPreview').style.display='none';$('frontInput').value=$('backInput').value='';$('frontQuality').innerHTML=$('backQuality').innerHTML='';frontData=backData=lastEstimate=null;await draftClear();ocrRaw={front:'',back:''};ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');setIdentifyStatus('Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.');$('gradeResults').className='results empty';$('gradeResults').textContent='Add photos and condition details, then estimate.';updateCentering();window.scrollTo({top:0,behavior:'smooth'})}
+async function saveCardAutomatic(){const rec=currentRecord();if(!rec.subject&&!rec.set&&!rec.cardNo)return;if(currentCardId){rec.id=currentCardId;await dbPut(rec)}else currentCardId=await dbAdd(rec);if($('saveStatus'))$('saveStatus').textContent=`Saved automatically to collection · local card #${currentCardId}`;await renderCollection()}
+async function resetForm(){document.querySelectorAll('#grade input[type=text],#grade input[type=number]').forEach(x=>x.value='');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).value=5);document.querySelectorAll('#grade input[type=checkbox]').forEach(x=>x.checked=false);$('corners').value=$('edges').value=$('surface').value='9';$('focusScore').value='9';$('frontPreview').style.display=$('backPreview').style.display='none';$('frontInput').value=$('backInput').value='';$('frontQuality').innerHTML=$('backQuality').innerHTML='';frontData=backData=lastEstimate=null;await draftClear();ocrRaw={front:'',back:''};ocrSuggestions={};backendAnalysis=null;ebayData=null;marketData=null;currentCardId=null;$('identifyResults').classList.add('hidden');setIdentifyStatus('Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.');$('gradeResults').className='results empty';$('gradeResults').textContent='Add front and back photos. Grade estimates will appear automatically.';if($('marketResults')){$('marketResults').className='results empty';$('marketResults').textContent='Current listing matches will appear automatically after identification.'}if($('conditionAutoSummary'))$('conditionAutoSummary').textContent='Waiting for analysis.';if($('saveStatus'))$('saveStatus').textContent='The analyzed card will be saved to your local collection automatically.';updateCentering();window.scrollTo({top:0,behavior:'smooth'})}
 async function renderCollection(){const all=await dbAll();const term=($('collectionSearch').value||'').toLowerCase();const rows=all.filter(c=>JSON.stringify([c.year,c.set,c.subject,c.cardNo,c.variation]).toLowerCase().includes(term)).sort((a,b)=>b.id-a.id);$('collectionStats').textContent=`${all.length} card${all.length===1?'':'s'} stored locally`;const root=$('collectionList');if(!rows.length){root.innerHTML='<div class="card-block hint">No matching cards.</div>';return}root.innerHTML=rows.map(c=>`<div class="collection-card"><img src="${c.front||''}" alt=""><div><div class="collection-title">${esc([c.year,c.subject].filter(Boolean).join(' ')||'Untitled card')}</div><div class="collection-sub">${esc([c.set,c.cardNo,c.variation].filter(Boolean).join(' · '))}</div><span class="pill">PSA ${fmtGrade(c.estimate?.psa??'-','PSA')}</span><span class="pill">BGS ${fmtGrade(c.estimate?.bgs??'-','BGS')}</span><span class="pill">CGC ${fmtGrade(c.estimate?.cgc??'-','CGC')}</span><span class="pill">SGC ${fmtGrade(c.estimate?.sgc??'-','SGC')}</span></div><div class="collection-actions"><button class="secondary" data-ebay="${c.id}">eBay</button><button class="danger" data-del="${c.id}">Delete</button></div></div>`).join('');root.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(confirm('Delete this card from the local collection?')){await dbDelete(+b.dataset.del);renderCollection()}});root.querySelectorAll('[data-ebay]').forEach(b=>b.onclick=()=>{const c=rows.find(x=>x.id===+b.dataset.ebay);const q=[c.year,c.set,c.subject,c.cardNo,c.variation].filter(Boolean).join(' ');window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`,'_blank','noopener')})}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function exportBackup(){const data=await dbAll();const blob=new Blob([JSON.stringify({version:1,exportedAt:new Date().toISOString(),cards:data},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`card-lab-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href)}
@@ -276,7 +299,7 @@ async function importBackup(file){try{const j=JSON.parse(await file.text());if(!
 
 function bind(){
   document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='collection')renderCollection()});
-  $('frontInput').onchange=()=>handlePhoto($('frontInput'),'frontPreview','frontQuality','front');$('backInput').onchange=()=>handlePhoto($('backInput'),'backPreview','backQuality','back');$('autoFrontCenterBtn').onclick=()=>autoBorders('front');$('autoBackCenterBtn').onclick=()=>autoBorders('back');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).oninput=updateCentering);$('identifyBtn').onclick=identifyFromPhotos;$('gradeBtn').onclick=renderEstimate;$('ebayBtn').onclick=ebaySearch;$('saveBtn').onclick=saveCard;$('saveBackendBtn').onclick=saveBackendSettings;$('testBackendBtn').onclick=testBackend;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
+  $('frontInput').onchange=()=>handlePhoto($('frontInput'),'frontPreview','frontQuality','front');$('backInput').onchange=()=>handlePhoto($('backInput'),'backPreview','backQuality','back');$('autoFrontCenterBtn').onclick=()=>autoBorders('front');$('autoBackCenterBtn').onclick=()=>autoBorders('back');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).oninput=updateCentering);$('identifyBtn').onclick=identifyFromPhotos;$('ebayBtn').onclick=ebaySearch;$('saveBackendBtn').onclick=saveBackendSettings;$('testBackendBtn').onclick=testBackend;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('installBtn').classList.add('hidden')}else toast('Use your browser Add to Home Screen option')};
 }
 (async function init(){await openDB();bind();loadBackendSettings();updateCentering();await restoreDraft();if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});})();

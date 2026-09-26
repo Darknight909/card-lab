@@ -16,7 +16,7 @@
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker · v1.4</p>
+      <p>Private pre-grading + collection tracker · v1.5</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -31,7 +31,7 @@
   <main>
     <section id="grade" class="panel active">
       <div class="notice">
-        <strong>Pre-grade only.</strong> This app applies published PSA/BGS/CGC/SGC standards to photo measurements and your inspection inputs. It cannot authenticate, detect every alteration, or reproduce a professional grader's judgment.
+        <strong>Pre-grade only.</strong> Add front and back photos. Sections 2–6 are filled automatically from photo analysis and online identity verification. Optional manual corrections remain available because photos cannot reveal every defect or reproduce a professional grader's judgment.
       </div>
 
       <div class="card-block">
@@ -52,14 +52,14 @@
           </div>
         </div>
         <div class="row wrap identify-row">
-          <button id="identifyBtn" class="primary">Analyze card automatically</button>
+          <button id="identifyBtn" class="primary">Re-analyze card</button>
           <span id="identifyStatus" class="hint">Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.</span>
         </div>
         <div id="identifyResults" class="identify-results hidden"></div>
       </div>
 
       <div class="card-block">
-        <h2>2. Card details <span class="auto-tag">auto-filled</span></h2>
+        <h2>2. Card details <span class="auto-tag">automatic</span></h2><p class="hint">Filled automatically. Edit only if the identification is wrong.</p>
         <div class="grid two">
           <label>Year<input id="year" inputmode="numeric" placeholder="2024" /></label>
           <label>Brand / Set<input id="set" placeholder="Topps Chrome" /></label>
@@ -72,34 +72,31 @@
 
       <div class="card-block">
         <h2>3. Centering</h2>
-        <p class="hint">Auto-detection is a starting estimate and works best on cards with clear printed borders. Correct the four border values if the overlay/estimate is wrong. Borderless designs require manual judgment.</p>
-        <h3>Front</h3>
-        <div class="grid four centering-inputs">
-          <label>Left<input id="frontBorderL" type="number" min="0" step="0.1" value="5" /></label>
-          <label>Right<input id="frontBorderR" type="number" min="0" step="0.1" value="5" /></label>
-          <label>Top<input id="frontBorderT" type="number" min="0" step="0.1" value="5" /></label>
-          <label>Bottom<input id="frontBorderB" type="number" min="0" step="0.1" value="5" /></label>
-        </div>
-        <div class="row">
-          <button id="autoFrontCenterBtn" class="secondary">Estimate front borders</button>
-          <span id="frontCenteringReadout" class="metric"></span>
-        </div>
-        <h3>Back</h3>
-        <div class="grid four centering-inputs">
-          <label>Left<input id="backBorderL" type="number" min="0" step="0.1" value="5" /></label>
-          <label>Right<input id="backBorderR" type="number" min="0" step="0.1" value="5" /></label>
-          <label>Top<input id="backBorderT" type="number" min="0" step="0.1" value="5" /></label>
-          <label>Bottom<input id="backBorderB" type="number" min="0" step="0.1" value="5" /></label>
-        </div>
-        <div class="row">
-          <button id="autoBackCenterBtn" class="secondary">Estimate back borders</button>
-          <span id="backCenteringReadout" class="metric"></span>
-        </div>
+        <p class="hint">Calculated automatically from the photos. Borderless or unusual designs may reduce confidence.</p>
+        <div class="auto-summary"><strong>Front:</strong> <span id="frontCenteringReadout" class="metric"></span><br><strong>Back:</strong> <span id="backCenteringReadout" class="metric"></span></div>
+        <details class="optional-controls"><summary>Manual centering correction (optional)</summary>
+          <h3>Front</h3>
+          <div class="grid four centering-inputs">
+            <label>Left<input id="frontBorderL" type="number" min="0" step="0.1" value="5" /></label>
+            <label>Right<input id="frontBorderR" type="number" min="0" step="0.1" value="5" /></label>
+            <label>Top<input id="frontBorderT" type="number" min="0" step="0.1" value="5" /></label>
+            <label>Bottom<input id="frontBorderB" type="number" min="0" step="0.1" value="5" /></label>
+          </div>
+          <button id="autoFrontCenterBtn" class="secondary">Recalculate front</button>
+          <h3>Back</h3>
+          <div class="grid four centering-inputs">
+            <label>Left<input id="backBorderL" type="number" min="0" step="0.1" value="5" /></label>
+            <label>Right<input id="backBorderR" type="number" min="0" step="0.1" value="5" /></label>
+            <label>Top<input id="backBorderT" type="number" min="0" step="0.1" value="5" /></label>
+            <label>Bottom<input id="backBorderB" type="number" min="0" step="0.1" value="5" /></label>
+          </div>
+          <button id="autoBackCenterBtn" class="secondary">Recalculate back</button>
+        </details>
       </div>
 
       <div class="card-block">
-        <h2>4. Condition inspection</h2>
-        <p class="hint">Use 10× magnification or your phone zoom with angled light for high-grade candidates. These controls intentionally cap grades when a defect is present.</p>
+        <h2>4. Condition inspection <span class="auto-tag">automatic</span></h2>
+        <p class="hint">Filled automatically from visible photo evidence. Use the optional correction controls only if you see something the camera missed.</p><div id="conditionAutoSummary" class="auto-summary">Waiting for analysis.</div><details class="optional-controls"><summary>Manual condition correction (optional)</summary>
         <div class="grid two">
           <label>Corners
             <select id="corners">
@@ -130,26 +127,28 @@
           <label><input type="checkbox" id="altered" /> Possible trimming/restoration/alteration</label>
           <label><input type="checkbox" id="confirmed" /> I inspected the physical card under angled light/magnification</label>
         </div>
+        </details>
       </div>
 
       <div class="card-block">
-        <h2>5. Estimate</h2>
-        <button id="gradeBtn" class="primary">Estimate grades</button>
-        <div id="gradeResults" class="results empty">Add photos and condition details, then estimate.</div>
+        <h2>5. Grade estimate <span class="auto-tag">automatic</span></h2>
+        <div id="gradeResults" class="results empty">Add front and back photos. Grade estimates will appear automatically.</div>
       </div>
 
       <div class="card-block">
-        <h2>6. Value / current eBay listings</h2>
-        <div class="grid two">
-          <label>Acquisition cost ($)<input id="cost" type="number" min="0" step="0.01" /></label>
-          <label>Notes<input id="notes" placeholder="Purchased locally, box 3, etc." /></label>
-        </div>
+        <h2>6. Value / current eBay listings <span class="auto-tag">automatic</span></h2>
+        <div id="marketResults" class="results empty">Current listing matches will appear automatically after identification.</div>
+        <div id="saveStatus" class="hint">The analyzed card will be saved to your local collection automatically.</div>
+        <details class="optional-controls"><summary>Optional bookkeeping</summary>
+          <div class="grid two">
+            <label>Acquisition cost ($)<input id="cost" type="number" min="0" step="0.01" placeholder="Optional" /></label>
+            <label>Notes<input id="notes" placeholder="Optional" /></label>
+          </div>
+        </details>
         <div class="row wrap">
-          <button id="ebayBtn" class="secondary">Search current eBay listings</button>
-          <button id="saveBtn" class="primary">Save to collection</button>
+          <button id="ebayBtn" class="secondary">Open full eBay search</button>
           <button id="resetBtn" class="ghost">New card</button>
         </div>
-        <p class="hint">Free mode opens a live eBay search built from this card's details. Direct in-app eBay results require an API/server connection so credentials are not exposed in the phone app.</p>
       </div>
     </section>
 
