@@ -1,4 +1,4 @@
-# Card Lab v1.7 — GitHub Pages frontend
+# Card Lab v1.8 — GitHub Pages frontend
 
 ## What changed
 - Front + back photos can now be sent to your private Cloudflare Worker for automatic card identification and visible-condition analysis.
@@ -29,10 +29,16 @@ Front and back draft photos are saved to IndexedDB immediately after selection a
 
 v1.6 changes: photos are Section 1, card details Section 2; analysis images are resized for transport; network/load failures retry automatically up to three times.
 
-## v1.7 update behavior
+## v1.8 update behavior
 
 - Normal future updates install in place; do not delete/re-add the Home Screen app.
 - Core files are checked network-first with cache bypassing.
 - The app checks `version.json` when opened/foregrounded and has a manual Check for update button.
 - Existing localStorage/IndexedDB (backend settings, collection, draft photos) remain untouched by frontend updates.
 - Full recovery export optionally includes backend settings and draft photos; store securely because it contains the API key.
+
+
+### v1.8
+- Separate Take photo and Photo Library controls for front/back.
+- Saved draft images show Photo saved locally rather than a misleading empty file-picker state.
+- Local computer-vision centering is used automatically if the backend does not return reliable centering.

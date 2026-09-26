@@ -1,5 +1,5 @@
-const CACHE='card-lab-shell-v1-7';
-const ASSETS=['./index.html','./styles.css?v=1.7','./app.js?v=1.7','./manifest.webmanifest','./icon-192.png','./icon-512.png','./icon-180.png','./version.json'];
+const CACHE='card-lab-shell-v1-8';
+const ASSETS=['./index.html','./styles.css?v=1.8','./app.js?v=1.8','./manifest.webmanifest','./icon-192.png','./icon-512.png','./icon-180.png','./version.json'];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>Promise.allSettled(ASSETS.map(a=>c.add(new Request(a,{cache:'reload'}))))))});
 self.addEventListener('activate',e=>{e.waitUntil((async()=>{for(const k of await caches.keys())if(k.startsWith('card-lab-')&&k!==CACHE)await caches.delete(k);await self.clients.claim()})())});
 self.addEventListener('message',e=>{if(e.data&&e.data.type==='SKIP_WAITING')self.skipWaiting()});

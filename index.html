@@ -9,14 +9,14 @@
   <meta name="apple-mobile-web-app-title" content="Card Lab" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-180.png" />
-  <link rel="stylesheet" href="styles.css?v=1.7" />
+  <link rel="stylesheet" href="styles.css?v=1.8" />
   <title>Card Grade & Collection Lab</title>
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker · v1.7</p>
+      <p>Private pre-grading + collection tracker · v1.8</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -40,13 +40,21 @@
         <div class="photo-grid">
           <div class="photo-box">
             <strong>Front</strong>
-            <input id="frontInput" type="file" accept="image/*" capture="environment" />
+            <div class="photo-actions">
+              <label class="file-button">Take photo<input id="frontCameraInput" type="file" accept="image/*" capture="environment" /></label>
+              <label class="file-button">Photo Library<input id="frontLibraryInput" type="file" accept="image/*" /></label>
+            </div>
+            <div id="frontSavedStatus" class="saved-photo-status">No photo saved yet</div>
             <img id="frontPreview" alt="Front preview" />
             <div id="frontQuality" class="quality"></div>
           </div>
           <div class="photo-box">
             <strong>Back</strong>
-            <input id="backInput" type="file" accept="image/*" capture="environment" />
+            <div class="photo-actions">
+              <label class="file-button">Take photo<input id="backCameraInput" type="file" accept="image/*" capture="environment" /></label>
+              <label class="file-button">Photo Library<input id="backLibraryInput" type="file" accept="image/*" /></label>
+            </div>
+            <div id="backSavedStatus" class="saved-photo-status">No photo saved yet</div>
             <img id="backPreview" alt="Back preview" />
             <div id="backQuality" class="quality"></div>
           </div>
@@ -208,6 +216,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=1.7" defer></script>
+  <script src="app.js?v=1.8" defer></script>
 </body>
 </html>
