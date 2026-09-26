@@ -1,6 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id);
-let db, frontData=null, backData=null, lastEstimate=null, deferredPrompt=null, ocrRaw={front:'',back:''}, ocrSuggestions={};
+let db, frontData=null, backData=null, lastEstimate=null, deferredPrompt=null, ocrRaw={front:'',back:''}, ocrSuggestions={}, backendAnalysis=null, ebayData=null;
 const DB='cardLabDB', STORE='cards';
 
 function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
@@ -36,28 +36,120 @@ function analyzeQuality(c){
 }
 function qualityText(q){const cls=q.score>=80?'good':q.score>=60?'warn':'bad';return `<span class="${cls}">Photo quality ${q.score}/100</span> · glare ${q.glare}% · sharpness ${q.sharp}`}
 async function handlePhoto(input,preview,quality,side){
-  const f=input.files?.[0];if(!f)return;try{const o=await compressImage(f);$(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);if(side==='front')frontData=o;else backData=o;ocrRaw[side]='';ocrSuggestions={};$('identifyResults').classList.add('hidden');toast(`${side} photo ready`)}catch(e){toast('Could not process photo')}
+  const f=input.files?.[0];if(!f)return;try{const o=await compressImage(f);$(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);if(side==='front')frontData=o;else backData=o;ocrRaw[side]='';ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');lastEstimate=null;toast(`${side} photo ready`)}catch(e){toast('Could not process photo')}
 }
 
 function setIdentifyStatus(html){$('identifyStatus').innerHTML=html}
-function normalizeOCRText(t=''){return t.replace(/\r/g,'\n').replace(/[ \t]+/g,' ').replace(/\n{2,}/g,'\n').trim()}
-function cleanLines(t=''){return normalizeOCRText(t).split('\n').map(x=>x.trim().replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9#'&./-]+$/g,'')).filter(Boolean)}
-function detectYear(text=''){const now=new Date().getFullYear()+1;const years=[...text.matchAll(/\b(19[4-9]\d|20[0-3]\d)\b/g)].map(m=>+m[1]).filter(y=>y<=now);return years.length?String(Math.max(...years)):''}
-function detectCardNo(text=''){const pats=[/(?:CARD\s*)?(?:NO\.?|NUMBER|#)\s*[:.-]?\s*([A-Z0-9-]{1,12})/i,/\bNO\.?\s*([A-Z0-9-]{1,12})\b/i];for(const r of pats){const m=text.match(r);if(m)return m[1].replace(/^#/,'')}return ''}
-const BRAND_PATTERNS=[
-  [/\bTOPPS\s+CHROME\b/i,'Topps Chrome'],[/\bTOPPS\s+HERITAGE\b/i,'Topps Heritage'],[/\bSTADIUM\s+CLUB\b/i,'Stadium Club'],[/\bBOWMAN\s+CHROME\b/i,'Bowman Chrome'],[/\bDONRUSS\s+OPTIC\b/i,'Donruss Optic'],[/\bPANINI\s+PRIZM\b/i,'Panini Prizm'],[/\bPANINI\s+SELECT\b/i,'Panini Select'],[/\bPANINI\s+MOSAIC\b/i,'Panini Mosaic'],[/\bUPPER\s+DECK\b/i,'Upper Deck'],[/\bTOPPS\b/i,'Topps'],[/\bBOWMAN\b/i,'Bowman'],[/\bDONRUSS\b/i,'Donruss'],[/\bPANINI\b/i,'Panini'],[/\bFLEER\b/i,'Fleer'],[/\bSCORE\b/i,'Score']
-];
-function detectSet(text=''){for(const [r,label] of BRAND_PATTERNS)if(r.test(text))return label;return ''}
-function detectSubject(frontText='',backText=''){
-  const excluded=/\b(TOPPS|BOWMAN|DONRUSS|PANINI|PRIZM|OPTIC|SELECT|MOSAIC|UPPER|DECK|FLEER|SCORE|CHROME|HERITAGE|STADIUM|CLUB|ROOKIE|CARD|NO|NUMBER|COPYRIGHT|MAJOR|LEAGUE|BASEBALL|FOOTBALL|BASKETBALL|HOCKEY|TRADING|CONGRATULATIONS|AUTHENTIC|AUTOGRAPH|MEMORABILIA|INC|LLC)\b/i;
-  const lines=cleanLines(frontText).concat(cleanLines(backText).slice(0,8));
-  let best='',score=-99;
-  for(const line of lines){if(line.length<4||line.length>36||/\d{3,}/.test(line)||excluded.test(line))continue;const words=line.split(/\s+/);if(words.length<1||words.length>4)continue;if(!words.every(w=>/^[A-Za-z.'-]{2,}$/.test(w)))continue;let sc=0;if(words.length===2)sc+=5;else if(words.length===3)sc+=3;sc+=Math.min(4,line.length/8);if(/^[A-Z .'-]+$/.test(line))sc+=2;if(sc>score){score=sc;best=line.replace(/\b\w/g,m=>m.toUpperCase())}}
-  return best;
+
+function backendConfig(){
+  return {
+    url:(localStorage.getItem('cardlab.backendUrl')||'').replace(/\/+$/,''),
+    key:localStorage.getItem('cardlab.backendKey')||''
+  };
 }
-function inferFromOCR(frontText,backText){const all=`${frontText}\n${backText}`;return {year:detectYear(all),set:detectSet(all),subject:detectSubject(frontText,backText),cardNo:detectCardNo(backText)||detectCardNo(frontText)}}
-function applySuggestions(s){ocrSuggestions=s;for(const [id,val] of Object.entries({year:s.year,set:s.set,subject:s.subject,cardNo:s.cardNo})){if(val&&!$(id).value)$(id).value=val}const parts=[s.year,s.set,s.subject,s.cardNo?`#${s.cardNo}`:''].filter(Boolean);$('identifyResults').classList.remove('hidden');$('identifyResults').innerHTML=`<div class="suggestion">Suggested: ${esc(parts.join(' · ')||'No confident fields found')}</div><div class="hint">Review/correct the fields above before grading or saving. OCR is weakest on foil, stylized fonts and glare.</div><details><summary>Show OCR text</summary><pre>${esc(`FRONT\n${ocrRaw.front||'(none)'}\n\nBACK\n${ocrRaw.back||'(none)'}`)}</pre></details>`}
-async function identifyFromPhotos(){if(!frontData&&!backData){toast('Take at least one card photo first');return}let worker=null;let side='Front';try{$('identifyBtn').disabled=true;setIdentifyStatus('<span class="spinner"></span>Loading OCR…');if(!window.Tesseract)throw new Error('OCR engine unavailable');worker=await Tesseract.createWorker('eng',1,{logger:m=>{if(m.status==='recognizing text'){const pct=Math.round((m.progress||0)*100);setIdentifyStatus(`<span class="spinner"></span>${side} OCR ${pct}%`)}}});if(frontData){side='Front';const r=await worker.recognize(frontData.dataUrl);ocrRaw.front=normalizeOCRText(r.data?.text||'')}else ocrRaw.front='';if(backData){side='Back';const r=await worker.recognize(backData.dataUrl);ocrRaw.back=normalizeOCRText(r.data?.text||'')}else ocrRaw.back='';const s=inferFromOCR(ocrRaw.front,ocrRaw.back);applySuggestions(s);setIdentifyStatus('Identification complete · processed on this device');toast('Review the suggested card details')}catch(e){console.error(e);setIdentifyStatus('OCR could not run. Check your internet connection and try again.');toast('Identification failed')}finally{if(worker)try{await worker.terminate()}catch{}$('identifyBtn').disabled=false}}
+function loadBackendSettings(){
+  const c=backendConfig();
+  if($('backendUrl'))$('backendUrl').value=c.url;
+  if($('backendKey'))$('backendKey').value=c.key;
+  if($('backendStatus'))$('backendStatus').textContent=c.url?'Saved locally':'Not configured';
+}
+function saveBackendSettings(){
+  const url=($('backendUrl').value||'').trim().replace(/\/+$/,'');
+  const key=($('backendKey').value||'').trim();
+  if(url&&!/^https:\/\/.+/i.test(url)){toast('Worker URL must start with https://');return}
+  localStorage.setItem('cardlab.backendUrl',url);
+  localStorage.setItem('cardlab.backendKey',key);
+  $('backendStatus').textContent=url&&key?'Saved locally':'Incomplete';
+  toast('Backend settings saved');
+}
+async function testBackend(){
+  const {url,key}=backendConfig();
+  if(!url){toast('Enter the Worker URL first');return}
+  try{
+    $('backendStatus').innerHTML='<span class="spinner"></span>Testing…';
+    const h=await fetch(`${url}/health`,{cache:'no-store'});
+    if(!h.ok)throw new Error(`HTTP ${h.status}`);
+    const j=await h.json();
+    if(key){
+      // Health is public by design; key is tested by a deliberately invalid analyze request.
+      const r=await fetch(`${url}/analyze`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({})});
+      if(r.status===401)throw new Error('API key rejected');
+    }
+    $('backendStatus').textContent=`Connected · API v${j.version||'?'}${j.ebayConfigured?' · eBay connected':''}`;
+    toast('Cloudflare backend connected');
+  }catch(e){
+    $('backendStatus').textContent=`Connection failed: ${e.message||e}`;
+    toast('Backend connection failed');
+  }
+}
+function nearestOption(selectId,value){
+  const el=$(selectId);if(!el||value==null)return;
+  const vals=[...el.options].map(o=>+o.value).filter(Number.isFinite);
+  if(!vals.length)return;
+  let best=vals[0];for(const v of vals)if(Math.abs(v-value)<Math.abs(best-value))best=v;
+  el.value=String(best);
+}
+function applyPairToBorders(side,axis,pair){
+  if(!Array.isArray(pair)||pair.length!==2)return;
+  const a=+pair[0],b=+pair[1];if(!(a>0)||!(b>0))return;
+  const pre=side==='front'?'front':'back';
+  if(axis==='lr'){$(pre+'BorderL').value=a;$(pre+'BorderR').value=b}
+  else {$(pre+'BorderT').value=a;$(pre+'BorderB').value=b}
+}
+function renderBackendSummary(a,ebay){
+  const i=a.identity||{}, c=a.condition||{};
+  const identConf=Math.round(a.identity_confidence||0), condConf=Math.round(a.condition_confidence||0);
+  const review=a.needs_review?`<div class="warn"><strong>Review recommended:</strong> ${esc(a.review_reason||'The automatic identification is not fully certain.')}</div>`:
+    '<div class="good"><strong>Automatic identification passed confidence check.</strong></div>';
+  const evidence=(a.evidence||[]).length?`<details><summary>Identification evidence</summary><ul class="hint">${a.evidence.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:'';
+  const notes=(c.notes||[]).length?`<details><summary>Visible-condition notes</summary><ul class="hint">${c.notes.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:'';
+  const ebayMsg=ebay?.configured?(ebay.items?.length?` · ${ebay.items.length} current eBay matches loaded`:' · eBay connected, no close matches'):' · eBay direct results not configured';
+  $('identifyResults').classList.remove('hidden');
+  $('identifyResults').innerHTML=`<div class="suggestion">${esc([i.year,i.set||i.brand,i.subject,i.cardNo?`#${i.cardNo}`:''].filter(Boolean).join(' · ')||'Card analyzed')}</div>
+    <div class="hint">Identity confidence ${identConf}% · visible-condition confidence ${condConf}%${ebayMsg}</div>${review}${evidence}${notes}`;
+}
+function applyBackendAnalysis(result){
+  backendAnalysis=result.analysis||null; ebayData=result.ebay||null;
+  const a=backendAnalysis||{}, i=a.identity||{}, c=a.condition||{}, d=c.defects||{};
+  const fields={year:i.year,set:i.set||i.brand,subject:i.subject,cardNo:i.cardNo,variation:i.variation};
+  for(const [id,val] of Object.entries(fields))if(val!==null&&val!==undefined)$(id).value=String(val);
+  if(i.category&&[...$('category').options].some(o=>o.value===i.category))$('category').value=i.category;
+  nearestOption('corners',c.corners);nearestOption('edges',c.edges);nearestOption('surface',c.surface);nearestOption('focusScore',c.focus);
+  applyPairToBorders('front','lr',c.front?.lr);applyPairToBorders('front','tb',c.front?.tb);
+  applyPairToBorders('back','lr',c.back?.lr);applyPairToBorders('back','tb',c.back?.tb);
+  $('crease').checked=!!d.crease;$('dent').checked=!!d.dent;$('stain').checked=!!d.stain;$('scratch').checked=!!d.scratch;$('printline').checked=!!d.printline;$('mark').checked=!!d.mark;$('altered').checked=!!d.possible_alteration;
+  $('confirmed').checked=false;
+  updateCentering();
+  renderEstimate();
+  renderBackendSummary(a,result.ebay);
+}
+async function identifyFromPhotos(){
+  if(!frontData||!backData){toast('Take both front and back photos first');return}
+  const {url,key}=backendConfig();
+  if(!url||!key){
+    toast('Set up the Cloudflare backend in Settings first');
+    document.querySelector('[data-tab="settings"]').click();
+    return;
+  }
+  try{
+    $('identifyBtn').disabled=true;
+    setIdentifyStatus('<span class="spinner"></span>Analyzing front + back…');
+    const r=await fetch(`${url}/analyze`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
+      body:JSON.stringify({front:frontData.dataUrl,back:backData.dataUrl})
+    });
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok)throw new Error(j.error||`HTTP ${r.status}`);
+    applyBackendAnalysis(j);
+    setIdentifyStatus('Automatic analysis complete · review any low-confidence warning, then save');
+    toast('Card identified and pre-graded');
+  }catch(e){
+    console.error(e);
+    setIdentifyStatus(`Analysis failed: ${esc(e.message||String(e))}`);
+    toast('Automatic analysis failed');
+  }finally{$('identifyBtn').disabled=false}
+}
 
 async function autoBorders(side){
   const data=side==='front'?frontData:backData;if(!data){toast(`Take the ${side} photo first`);return}
@@ -90,8 +182,8 @@ function defectCaps(){
 function gradeCapFromThreshold(worst, rows){for(const [limit,grade] of rows)if(worst<=limit)return grade;return rows[rows.length-1][1]}
 function centerCaps(c){
   const fw=c.front.worst,bw=c.back.worst;
-  const psaFront=gradeCapFromThreshold(fw,[[55,10],[60,9],[70,8],[75,7],[80,6],[85,5],[90,3],[100,1]]);
-  const psaBack=gradeCapFromThreshold(bw,[[75,10],[90,8],[95,6],[100,4]]);
+  const psaFront=gradeCapFromThreshold(fw,[[55,10],[60,9],[65,8],[70,7],[80,6],[85,5],[90,3],[100,1]]);
+  const psaBack=gradeCapFromThreshold(bw,[[75,10],[90,9],[100,1]]);
   const psa=Math.min(psaFront,psaBack);
   const fAxes=[c.front.lr,c.front.tb].map(a=>Math.max(...a)).sort((a,b)=>a-b);
   let bgsFront;if(fAxes[1]<=50.5)bgsFront=10;else if(fAxes[0]<=50.5&&fAxes[1]<=55)bgsFront=9.5;else bgsFront=gradeCapFromThreshold(fw,[[55,9],[60,8],[65,7],[70,6],[75,5],[80,4],[85,3],[90,2],[100,1]]);
@@ -117,7 +209,7 @@ function companyGrades(){
   if(bgs===10 && !bgsSubs.every(x=>x>=10))bgs=9.5;if(dc.cap===0)bgs=0;
   const cgcCore=Math.min(s.corners,s.edges,s.surface,s.focus);let cgc=roundHalf(Math.min(cc.cgc,dc.cap||10,cgcCore+.25));if(cgc>9.5&&c.front.worst>55)cgc=9.5;if(dc.cap===0)cgc=0;
   const sgcCore=Math.min(s.corners,s.edges,s.surface,s.focus);let sgc=roundHalf(Math.min(cc.sgc,dc.cap||10,sgcCore+.25));if(dc.cap===0)sgc=0;
-  const q=[frontData?.quality.score||0,backData?.quality.score||0].filter(Boolean);const qavg=q.length?q.reduce((a,b)=>a+b,0)/q.length:0;let confidence=Math.round(qavg*.55+($('confirmed').checked?35:10)+(frontData&&backData?10:0));confidence=clamp(confidence,10,95);
+  const q=[frontData?.quality.score||0,backData?.quality.score||0].filter(Boolean);const qavg=q.length?q.reduce((a,b)=>a+b,0)/q.length:0;const aiConf=backendAnalysis?.condition_confidence||0;let confidence=backendAnalysis?Math.round(qavg*.40+aiConf*.45+15):Math.round(qavg*.55+($('confirmed').checked?35:10)+(frontData&&backData?10:0));confidence=clamp(confidence,10,95);
   return {psa,bgs,cgc,sgc,bgsSubs:{centering:bgsSubs[0],corners:s.corners,edges:s.edges,surface:s.surface},centering:c,flags:dc.flags,confidence};
 }
 function fmtGrade(g,company){if(g===0)return 'NG?';if(company==='SGC'&&g===10)return '10';return String(g)}
@@ -130,9 +222,9 @@ function renderEstimate(){lastEstimate=companyGrades();const e=lastEstimate;cons
 
 function cardQuery(){return [$('year').value,$('set').value,$('subject').value,$('cardNo').value,$('variation').value].filter(Boolean).join(' ').trim()}
 function ebaySearch(){const q=cardQuery();if(!q){toast('Add card details first');return}window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`,'_blank','noopener')}
-function currentRecord(){if(!lastEstimate)lastEstimate=companyGrades();return {createdAt:new Date().toISOString(),year:$('year').value,set:$('set').value,subject:$('subject').value,cardNo:$('cardNo').value,variation:$('variation').value,category:$('category').value,cost:+$('cost').value||0,notes:$('notes').value,front:frontData?.dataUrl||null,back:backData?.dataUrl||null,frontQuality:frontData?.quality||null,backQuality:backData?.quality||null,identification:{suggestions:ocrSuggestions,frontText:ocrRaw.front,backText:ocrRaw.back},centering:centering(),scores:baseScores(),defects:{crease:$('crease').checked,dent:$('dent').checked,stain:$('stain').checked,scratch:$('scratch').checked,printline:$('printline').checked,mark:$('mark').checked,altered:$('altered').checked,confirmed:$('confirmed').checked},estimate:lastEstimate}}
+function currentRecord(){if(!lastEstimate)lastEstimate=companyGrades();return {createdAt:new Date().toISOString(),year:$('year').value,set:$('set').value,subject:$('subject').value,cardNo:$('cardNo').value,variation:$('variation').value,category:$('category').value,cost:+$('cost').value||0,notes:$('notes').value,front:frontData?.dataUrl||null,back:backData?.dataUrl||null,frontQuality:frontData?.quality||null,backQuality:backData?.quality||null,identification:{backend:backendAnalysis,ebay:ebayData,suggestions:ocrSuggestions,frontText:ocrRaw.front,backText:ocrRaw.back},centering:centering(),scores:baseScores(),defects:{crease:$('crease').checked,dent:$('dent').checked,stain:$('stain').checked,scratch:$('scratch').checked,printline:$('printline').checked,mark:$('mark').checked,altered:$('altered').checked,confirmed:$('confirmed').checked},estimate:lastEstimate}}
 async function saveCard(){if(!$('subject').value&&!$('set').value){toast('Add at least a subject or set');return}const id=await dbAdd(currentRecord());toast(`Saved card #${id}`);await renderCollection()}
-function resetForm(){document.querySelectorAll('#grade input[type=text],#grade input[type=number]').forEach(x=>x.value='');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).value=5);document.querySelectorAll('#grade input[type=checkbox]').forEach(x=>x.checked=false);$('corners').value=$('edges').value=$('surface').value='9';$('focusScore').value='9';$('frontPreview').style.display=$('backPreview').style.display='none';$('frontInput').value=$('backInput').value='';$('frontQuality').innerHTML=$('backQuality').innerHTML='';frontData=backData=lastEstimate=null;ocrRaw={front:'',back:''};ocrSuggestions={};$('identifyResults').classList.add('hidden');setIdentifyStatus('Uses on-device OCR. First use requires internet to load the OCR engine.');$('gradeResults').className='results empty';$('gradeResults').textContent='Add photos and condition details, then estimate.';updateCentering();window.scrollTo({top:0,behavior:'smooth'})}
+function resetForm(){document.querySelectorAll('#grade input[type=text],#grade input[type=number]').forEach(x=>x.value='');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).value=5);document.querySelectorAll('#grade input[type=checkbox]').forEach(x=>x.checked=false);$('corners').value=$('edges').value=$('surface').value='9';$('focusScore').value='9';$('frontPreview').style.display=$('backPreview').style.display='none';$('frontInput').value=$('backInput').value='';$('frontQuality').innerHTML=$('backQuality').innerHTML='';frontData=backData=lastEstimate=null;ocrRaw={front:'',back:''};ocrSuggestions={};backendAnalysis=null;ebayData=null;$('identifyResults').classList.add('hidden');setIdentifyStatus('Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.');$('gradeResults').className='results empty';$('gradeResults').textContent='Add photos and condition details, then estimate.';updateCentering();window.scrollTo({top:0,behavior:'smooth'})}
 async function renderCollection(){const all=await dbAll();const term=($('collectionSearch').value||'').toLowerCase();const rows=all.filter(c=>JSON.stringify([c.year,c.set,c.subject,c.cardNo,c.variation]).toLowerCase().includes(term)).sort((a,b)=>b.id-a.id);$('collectionStats').textContent=`${all.length} card${all.length===1?'':'s'} stored locally`;const root=$('collectionList');if(!rows.length){root.innerHTML='<div class="card-block hint">No matching cards.</div>';return}root.innerHTML=rows.map(c=>`<div class="collection-card"><img src="${c.front||''}" alt=""><div><div class="collection-title">${esc([c.year,c.subject].filter(Boolean).join(' ')||'Untitled card')}</div><div class="collection-sub">${esc([c.set,c.cardNo,c.variation].filter(Boolean).join(' · '))}</div><span class="pill">PSA ${fmtGrade(c.estimate?.psa??'-','PSA')}</span><span class="pill">BGS ${fmtGrade(c.estimate?.bgs??'-','BGS')}</span><span class="pill">CGC ${fmtGrade(c.estimate?.cgc??'-','CGC')}</span><span class="pill">SGC ${fmtGrade(c.estimate?.sgc??'-','SGC')}</span></div><div class="collection-actions"><button class="secondary" data-ebay="${c.id}">eBay</button><button class="danger" data-del="${c.id}">Delete</button></div></div>`).join('');root.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(confirm('Delete this card from the local collection?')){await dbDelete(+b.dataset.del);renderCollection()}});root.querySelectorAll('[data-ebay]').forEach(b=>b.onclick=()=>{const c=rows.find(x=>x.id===+b.dataset.ebay);const q=[c.year,c.set,c.subject,c.cardNo,c.variation].filter(Boolean).join(' ');window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`,'_blank','noopener')})}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function exportBackup(){const data=await dbAll();const blob=new Blob([JSON.stringify({version:1,exportedAt:new Date().toISOString(),cards:data},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`card-lab-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href)}
@@ -140,7 +232,7 @@ async function importBackup(file){try{const j=JSON.parse(await file.text());if(!
 
 function bind(){
   document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='collection')renderCollection()});
-  $('frontInput').onchange=()=>handlePhoto($('frontInput'),'frontPreview','frontQuality','front');$('backInput').onchange=()=>handlePhoto($('backInput'),'backPreview','backQuality','back');$('autoFrontCenterBtn').onclick=()=>autoBorders('front');$('autoBackCenterBtn').onclick=()=>autoBorders('back');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).oninput=updateCentering);$('identifyBtn').onclick=identifyFromPhotos;$('gradeBtn').onclick=renderEstimate;$('ebayBtn').onclick=ebaySearch;$('saveBtn').onclick=saveCard;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
+  $('frontInput').onchange=()=>handlePhoto($('frontInput'),'frontPreview','frontQuality','front');$('backInput').onchange=()=>handlePhoto($('backInput'),'backPreview','backQuality','back');$('autoFrontCenterBtn').onclick=()=>autoBorders('front');$('autoBackCenterBtn').onclick=()=>autoBorders('back');['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).oninput=updateCentering);$('identifyBtn').onclick=identifyFromPhotos;$('gradeBtn').onclick=renderEstimate;$('ebayBtn').onclick=ebaySearch;$('saveBtn').onclick=saveCard;$('saveBackendBtn').onclick=saveBackendSettings;$('testBackendBtn').onclick=testBackend;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('installBtn').classList.add('hidden')}else toast('Use your browser Add to Home Screen option')};
 }
-(async function init(){await openDB();bind();updateCentering();if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});})();
+(async function init(){await openDB();bind();loadBackendSettings();updateCentering();if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});})();

@@ -16,7 +16,7 @@
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker · v1.1</p>
+      <p>Private pre-grading + collection tracker · v1.2</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -35,7 +35,7 @@
       </div>
 
       <div class="card-block">
-        <h2>1. Card details</h2>
+        <h2>1. Card details <span class="auto-tag">auto-filled</span></h2>
         <div class="grid two">
           <label>Year<input id="year" inputmode="numeric" placeholder="2024" /></label>
           <label>Brand / Set<input id="set" placeholder="Topps Chrome" /></label>
@@ -64,8 +64,8 @@
           </div>
         </div>
         <div class="row wrap identify-row">
-          <button id="identifyBtn" class="secondary">Identify from photos (free)</button>
-          <span id="identifyStatus" class="hint">Uses on-device OCR. First use requires internet to load the OCR engine.</span>
+          <button id="identifyBtn" class="primary">Analyze card automatically</button>
+          <span id="identifyStatus" class="hint">Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.</span>
         </div>
         <div id="identifyResults" class="identify-results hidden"></div>
       </div>
@@ -183,8 +183,16 @@
 
     <section id="settings" class="panel">
       <div class="card-block">
+        <h2>Cloudflare backend</h2>
+        <p class="hint">The Worker performs automatic identification and visible-condition analysis. Your collection remains on this phone.</p>
+        <label>Worker URL<input id="backendUrl" inputmode="url" placeholder="https://card-lab-api.YOUR-SUBDOMAIN.workers.dev" /></label>
+        <label style="margin-top:10px">Private API key<input id="backendKey" type="password" autocomplete="off" placeholder="Your CARDLAB_API_KEY secret" /></label>
+        <div class="row wrap"><button id="saveBackendBtn" class="primary">Save backend settings</button><button id="testBackendBtn" class="secondary">Test connection</button><span id="backendStatus" class="hint"></span></div>
+        <p class="hint">The Worker URL and API key are stored only in this browser's local storage. Do not put the API key in GitHub.</p>
+      </div>
+      <div class="card-block">
         <h2>Backup & privacy</h2>
-        <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not uploaded by this app.</p>
+        <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not stored in cloud storage by this app. During automatic analysis, the selected front/back photos are sent transiently to your Cloudflare Worker/Workers AI and are not written to KV, R2, D1, or Durable Objects.</p>
         <div class="row wrap"><button id="exportBtn" class="secondary">Export backup</button><label class="file-button">Import backup<input id="importInput" type="file" accept="application/json" /></label><button id="clearBtn" class="danger">Erase local collection</button></div>
       </div>
       <div class="card-block">
@@ -195,7 +203,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="app.js" defer></script>
 </body>
 </html>
