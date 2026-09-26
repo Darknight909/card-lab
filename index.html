@@ -9,14 +9,14 @@
   <meta name="apple-mobile-web-app-title" content="Card Lab" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-180.png" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=1.7" />
   <title>Card Grade & Collection Lab</title>
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker · v1.6</p>
+      <p>Private pre-grading + collection tracker · v1.7</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -192,7 +192,13 @@
       <div class="card-block">
         <h2>Backup & privacy</h2>
         <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not stored in cloud storage by this app. During automatic analysis, the selected front/back photos are sent transiently to your Cloudflare Worker/Workers AI and are not written to KV, R2, D1, or Durable Objects.</p>
-        <div class="row wrap"><button id="exportBtn" class="secondary">Export backup</button><label class="file-button">Import backup<input id="importInput" type="file" accept="application/json" /></label><button id="clearBtn" class="danger">Erase local collection</button></div>
+        <div class="row wrap"><button id="exportBtn" class="secondary">Export collection backup</button><button id="exportRecoveryBtn" class="secondary">Export full recovery</button><label class="file-button">Import backup<input id="importInput" type="file" accept="application/json" /></label><button id="clearBtn" class="danger">Erase local collection</button></div><p class="hint">Full recovery includes the private backend API key and current draft photos. Store that file securely.</p>
+      </div>
+      <div class="card-block">
+        <h2>App updates</h2>
+        <p class="hint">Card Lab updates in place. Do not delete the Home Screen app for normal updates; your backend settings, collection, and draft photos stay on this device.</p>
+        <div class="row wrap"><button id="checkUpdateBtn" class="secondary">Check for update</button><span id="updateStatus" class="hint">Automatic update checks enabled</span></div>
+        <p class="hint">If you ever must reinstall the app, a full recovery export can restore the Cloudflare settings and draft photos.</p>
       </div>
       <div class="card-block">
         <h2>Install on iPhone</h2>
@@ -202,6 +208,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js" defer></script>
+  <script src="app.js?v=1.7" defer></script>
 </body>
 </html>
