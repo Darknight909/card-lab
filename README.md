@@ -1,44 +1,32 @@
-# Card Lab v1.8 — GitHub Pages frontend
+# Card Lab v2.0 — GitHub Pages frontend
 
-## What changed
-- Front + back photos can now be sent to your private Cloudflare Worker for automatic card identification and visible-condition analysis.
-- The app auto-fills year, set, subject, card number, variation, category, centering, condition scores and visible defects.
-- PSA/BGS/CGC/SGC pre-grade estimates are then calculated automatically from the published-standard rules in the app.
-- Current eBay search is built automatically. If eBay API secrets are configured on the Worker, the backend also uses current listing titles as identity corroboration.
-- Backend settings (Worker URL + private API key) are stored only in the browser on your phone.
-- Collection/photos remain in local IndexedDB. The Worker does not persist the submitted photos.
-- Service worker changed to network-first for core app files so future updates should refresh more reliably.
+Card Lab 2.0 replaces the incremental v1 identification workflow with a single evidence pipeline.
 
-## Update GitHub Pages
-Upload all files in this folder to the root of the existing `card-lab` repository and commit them. Keep GitHub Pages on the `main` branch root.
+## Automatic workflow
+1. Front and back photos are saved locally in IndexedDB.
+2. Card Lab detects/crops the card and measures centering locally on the phone.
+3. The Worker sends analysis copies to Google Cloud Vision for Web Detection + OCR.
+4. The Worker verifies the resulting identity clues with Tavily text/web results.
+5. Cloudflare Workers AI inspects visible corners, edges, surface and print/focus condition only.
+6. Card Lab calculates PSA/BGS/CGC/SGC pre-grade estimates locally only when condition and centering are reliable.
+7. Current eBay listing results are loaded automatically when available.
+8. The completed record and photos stay in the phone's local collection.
 
-## First run
-Open Card Lab > Settings and enter:
-1. Your Cloudflare Worker URL
-2. The same `CARDLAB_API_KEY` value you configured as a Worker secret
+## Important changes from v1.8
+- Google visual-web matching is the primary identity source rather than a generic vision-model guess.
+- Exact OCR card codes are treated as stronger evidence than jersey numbers or statistics years.
+- Centering is calculated locally and withheld when the design borders cannot be measured reliably.
+- Draft analysis results are cached locally, so reopening/updating the app does not automatically spend another online analysis request.
+- Take Photo and Photo Library remain separate controls; hidden file inputs eliminate the misleading iOS “no file selected” display.
+- Front/back analysis images use a higher-resolution detected card crop.
+- No grade is shown when the evidence needed to support it is missing.
 
-Tap Test connection. Then return to Grade, take front/back photos, and tap Analyze card automatically.
+## Update existing GitHub Pages app
+Upload/replace all files in the root of the existing `card-lab` repository and commit.
+Do not delete/re-add the iPhone Home Screen app. Open the installed app and use Settings → Check for update if it does not refresh automatically.
 
-## Important
-This remains a pre-grade estimate. Phone photos and AI cannot reliably detect every dent, micro-scratch, alteration, restoration, trimming issue, or in-hand eye-appeal factor used by professional graders.
+## Privacy
+Collection records and saved card photos remain in local browser storage. Analysis copies are sent transiently through the user's Worker to Google Cloud Vision and Cloudflare Workers AI. Tavily receives text/search clues, not card images. The supplied Worker does not persist cards/photos in KV, R2, D1, or Durable Objects.
 
-
-## v1.6
-Front and back draft photos are saved to IndexedDB immediately after selection and restored automatically after app reloads. Use Reset/New Card to intentionally clear them.
-
-
-v1.6 changes: photos are Section 1, card details Section 2; analysis images are resized for transport; network/load failures retry automatically up to three times.
-
-## v1.8 update behavior
-
-- Normal future updates install in place; do not delete/re-add the Home Screen app.
-- Core files are checked network-first with cache bypassing.
-- The app checks `version.json` when opened/foregrounded and has a manual Check for update button.
-- Existing localStorage/IndexedDB (backend settings, collection, draft photos) remain untouched by frontend updates.
-- Full recovery export optionally includes backend settings and draft photos; store securely because it contains the API key.
-
-
-### v1.8
-- Separate Take photo and Photo Library controls for front/back.
-- Saved draft images show Photo saved locally rather than a misleading empty file-picker state.
-- Local computer-vision centering is used automatically if the backend does not return reliable centering.
+## Grading limitation
+This is a pre-grade estimate. Phone photos cannot rule out microscopic scratches, indentations, trimming, restoration, surface texture, or other in-hand inspection factors used by professional graders.

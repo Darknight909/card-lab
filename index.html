@@ -9,14 +9,14 @@
   <meta name="apple-mobile-web-app-title" content="Card Lab" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-180.png" />
-  <link rel="stylesheet" href="styles.css?v=1.8" />
+  <link rel="stylesheet" href="styles.css?v=2.0" />
   <title>Card Grade & Collection Lab</title>
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker · v1.8</p>
+      <p>Private pre-grading + collection tracker · v2.0</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -41,8 +41,10 @@
           <div class="photo-box">
             <strong>Front</strong>
             <div class="photo-actions">
-              <label class="file-button">Take photo<input id="frontCameraInput" type="file" accept="image/*" capture="environment" /></label>
-              <label class="file-button">Photo Library<input id="frontLibraryInput" type="file" accept="image/*" /></label>
+              <button id="frontCameraBtn" class="file-button" type="button">Take photo</button>
+              <button id="frontLibraryBtn" class="file-button" type="button">Photo Library</button>
+              <input id="frontCameraInput" class="hidden-file" type="file" accept="image/*" capture="environment" />
+              <input id="frontLibraryInput" class="hidden-file" type="file" accept="image/*" />
             </div>
             <div id="frontSavedStatus" class="saved-photo-status">No photo saved yet</div>
             <img id="frontPreview" alt="Front preview" />
@@ -51,8 +53,10 @@
           <div class="photo-box">
             <strong>Back</strong>
             <div class="photo-actions">
-              <label class="file-button">Take photo<input id="backCameraInput" type="file" accept="image/*" capture="environment" /></label>
-              <label class="file-button">Photo Library<input id="backLibraryInput" type="file" accept="image/*" /></label>
+              <button id="backCameraBtn" class="file-button" type="button">Take photo</button>
+              <button id="backLibraryBtn" class="file-button" type="button">Photo Library</button>
+              <input id="backCameraInput" class="hidden-file" type="file" accept="image/*" capture="environment" />
+              <input id="backLibraryInput" class="hidden-file" type="file" accept="image/*" />
             </div>
             <div id="backSavedStatus" class="saved-photo-status">No photo saved yet</div>
             <img id="backPreview" alt="Back preview" />
@@ -61,7 +65,7 @@
         </div>
         <div class="row wrap identify-row">
           <button id="identifyBtn" class="primary">Re-analyze card</button>
-          <span id="identifyStatus" class="hint">Uploads these two photos transiently to your private Cloudflare Worker for identification and visible-condition analysis.</span>
+          <span id="identifyStatus" class="hint">Google visual matching + OCR identify the card; Cloudflare analyzes visible condition. Photos are processed transiently and your collection stays on this phone.</span>
         </div>
         <div id="identifyResults" class="identify-results hidden"></div>
       </div>
@@ -79,8 +83,8 @@
       </div>
 
       <div class="card-block">
-        <h2>3. Centering</h2>
-        <p class="hint">Calculated automatically from the photos. Borderless or unusual designs may reduce confidence.</p>
+        <h2>3. Centering <span class="auto-tag">automatic</span></h2>
+        <p class="hint">Calculated locally on this phone from the detected card geometry/design borders. Borderless or unusual designs may reduce confidence; uncertain measurements are withheld instead of guessed.</p>
         <div class="auto-summary"><strong>Front:</strong> <span id="frontCenteringReadout" class="metric"></span><br><strong>Back:</strong> <span id="backCenteringReadout" class="metric"></span></div>
         <details class="optional-controls"><summary>Manual centering correction (optional)</summary>
           <h3>Front</h3>
@@ -176,10 +180,10 @@
         <p>PSA 10 requires a virtually perfect card; published centering tolerance is approximately 55/45 or better on the front and 75/25 on the back. Corners, focus, gloss, stains and printing flaws also matter.</p>
         <a href="https://www.psacard.com/gradingstandards" target="_blank" rel="noopener">Official PSA standards</a>
         <h3>Beckett / BGS</h3>
-        <p>BGS evaluates centering, corners, edges and surface. Published 10 centering is 50/50 on front; 9.5 allows approximately 50/50 one direction and 55/45 the other. Overall grade is not a simple average; the lowest subgrade heavily constrains the result.</p>
+        <p>BGS evaluates centering, corners, edges and surface. Its published scale gives Pristine 10 centering as 50/50 on the front and 55/45 or better on the back; Gem Mint 9.5 permits 50/50 one direction and 55/45 the other on the front. Beckett states that the overall grade is not a simple average and the lowest subgrade is heavily weighted.</p>
         <a href="https://www.beckett.com/grading/scale" target="_blank" rel="noopener">Official Beckett scale</a>
         <h3>CGC Cards</h3>
-        <p>CGC Pristine 10 calls for 50/50 centering and virtually flawless condition. Gem Mint 10 allows approximately 55/45 front and 75/25 reverse, with high corner/edge/surface requirements.</p>
+        <p>CGC Cards evaluates centering, corners, edges and surface on its 10-point scale. Pristine 10 is reserved for exceptionally strong cards; phone-photo estimates remain conservative because microscopic defects cannot be ruled out.</p>
         <a href="https://www.cgccards.com/card-grading/grading-scale/" target="_blank" rel="noopener">Official CGC scale</a>
         <h3>SGC</h3>
         <p>SGC uses 1–10 with half grades plus Pristine 10 and Gem 10. Its published descriptions evaluate centering, focus, corners, surface gloss, print/refractor lines, stains and wear.</p>
@@ -191,7 +195,7 @@
     <section id="settings" class="panel">
       <div class="card-block">
         <h2>Cloudflare backend</h2>
-        <p class="hint">The Worker performs automatic identification and visible-condition analysis. Your collection remains on this phone.</p>
+        <p class="hint">The Worker coordinates Google Vision visual matching/OCR, web verification, and visible-condition analysis. Your collection remains on this phone.</p>
         <label>Worker URL<input id="backendUrl" inputmode="url" placeholder="https://card-lab-api.YOUR-SUBDOMAIN.workers.dev" /></label>
         <label style="margin-top:10px">Private API key<input id="backendKey" type="password" autocomplete="off" placeholder="Your CARDLAB_API_KEY secret" /></label>
         <div class="row wrap"><button id="saveBackendBtn" class="primary">Save backend settings</button><button id="testBackendBtn" class="secondary">Test connection</button><span id="backendStatus" class="hint"></span></div>
@@ -199,7 +203,7 @@
       </div>
       <div class="card-block">
         <h2>Backup & privacy</h2>
-        <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not stored in cloud storage by this app. During automatic analysis, the selected front/back photos are sent transiently to your Cloudflare Worker/Workers AI and are not written to KV, R2, D1, or Durable Objects.</p>
+        <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not stored in cloud storage by Card Lab. During automatic analysis, analysis copies of the front/back photos are sent transiently through your Cloudflare Worker to Google Cloud Vision for OCR/visual-web matching and to Cloudflare Workers AI for visible-condition inspection. Tavily receives text/search clues only. The Worker does not write photos or collection data to KV, R2, D1, or Durable Objects.</p>
         <div class="row wrap"><button id="exportBtn" class="secondary">Export collection backup</button><button id="exportRecoveryBtn" class="secondary">Export full recovery</button><label class="file-button">Import backup<input id="importInput" type="file" accept="application/json" /></label><button id="clearBtn" class="danger">Erase local collection</button></div><p class="hint">Full recovery includes the private backend API key and current draft photos. Store that file securely.</p>
       </div>
       <div class="card-block">
@@ -216,6 +220,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=1.8" defer></script>
+  <script src="app.js?v=2.0" defer></script>
 </body>
 </html>

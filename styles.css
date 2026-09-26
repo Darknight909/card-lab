@@ -10,3 +10,6 @@
 .market-list{display:grid;gap:.6rem}.market-item{display:flex;justify-content:space-between;gap:.75rem;text-decoration:none;color:inherit;padding:.75rem;border:1px solid #d7dde3;border-radius:10px;background:#fff}.market-item span{white-space:nowrap;font-weight:700}
 
 .photo-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:8px 0}.photo-actions .file-button{font-size:12px;padding:9px 11px}.saved-photo-status{font-size:11px;color:var(--muted);margin:4px 0 8px}.photo-box .file-button input{display:none}
+
+.hidden-file{display:none!important}
+.pipeline-badge{display:inline-block;margin:4px 5px 0 0;padding:3px 7px;border:1px solid var(--line);border-radius:999px;font-size:10px;color:var(--muted);background:#fff}.stage-list{margin-top:8px;font-size:11px;color:var(--muted)}
