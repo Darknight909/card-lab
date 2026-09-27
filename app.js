@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '3.0';
+const APP_VERSION = '3.0.1';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 
@@ -295,11 +295,25 @@ function pairWorst(pair){return Array.isArray(pair)?Math.max(...pair.map(Number)
 function reconcileCenteringWithVision(){
   for(const side of ['front','back']){
     const local=centeringMeta[side],vision=visionCenteringFor(side);
-    if(!local?.reliable||local.manual||!vision)continue;
+    if(!local?.reliable||local.manual)continue;
     const c=centeringSide(side);
-    const dLR=Math.abs(pairWorst(c.lr)-pairWorst(vision.lr)),dTB=Math.abs(pairWorst(c.tb)-pairWorst(vision.tb));
+    const worstLR=pairWorst(c.lr),worstTB=pairWorst(c.tb);
+    const extreme=worstLR>70||worstTB>70;
+
+    // Very asymmetric automatic measurements are exactly where an internal
+    // design line is most likely to be mistaken for the true printed border.
+    // Require an independent vision cross-check before accepting >70/30.
+    if(extreme&&!vision){
+      centeringMeta[side]={...local,reliable:false,needsCorroboration:true,confidence:Math.min(local.confidence||0,45),reason:'extreme automatic centering requires independent confirmation'};
+      continue;
+    }
+    if(!vision)continue;
+
+    const dLR=Math.abs(worstLR-pairWorst(vision.lr)),dTB=Math.abs(worstTB-pairWorst(vision.tb));
     if(dLR>10||dTB>10){
       centeringMeta[side]={...local,reliable:false,visionConflict:true,confidence:Math.min(local.confidence||0,45),reason:'local border measurement disagreed with independent vision centering estimate'};
+    }else if(extreme&&(dLR>7||dTB>7||Number(vision.confidence||0)<65)){
+      centeringMeta[side]={...local,reliable:false,needsCorroboration:true,confidence:Math.min(local.confidence||0,45),reason:'extreme automatic centering was not confirmed strongly enough'};
     }else if(dLR<=5&&dTB<=5){
       centeringMeta[side]={...local,visionConfirmed:true,confidence:Math.min(95,(local.confidence||0)+5),reason:'local border measurement independently cross-checked'};
     }

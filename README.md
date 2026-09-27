@@ -1,6 +1,11 @@
-# Card Lab v3.0 — GitHub Pages frontend
+# Card Lab v3.0.1 — GitHub Pages frontend
 
-Card Lab 3.0 is a full-system update focused on verified identity, conservative pre-grading, usable current-market results, and durable collection history.
+Card Lab 3.0.1 is a stabilization update to the v3 full-system architecture focused on verified identity, conservative pre-grading, usable current-market results, and durable collection history.
+
+## What changed from v3.0
+- Automatic centering more extreme than 70/30 is withheld unless independently corroborated by the backend vision estimate.
+- This prevents internal artwork/design lines from being accepted as high-confidence printed borders.
+- No collection schema or saved-card format changes.
 
 ## Core workflow
 1. Front and back photos are saved locally on the phone.
