@@ -1,10 +1,10 @@
 'use strict';
 
-const APP_VERSION = '5.0.1';
+const APP_VERSION = '6.0.0';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 const REF_CACHE_KEY='cardlab.referenceCache.v1', REGRESSION_KEY='cardlab.regressionCases.v1', TELEMETRY_KEY='cardlab.telemetry.v1';
-const FEATURE_FLAGS=Object.freeze({guidedCapture:false,photoQualityGate:true,referenceTemplates:true,stageCaching:true,targetedConsensus:true,adaptiveMarket:true,localFingerprintHints:true,manualCollectionOnly:true});
+const FEATURE_FLAGS=Object.freeze({guidedCapture:false,photoQualityGate:true,referenceTemplates:true,stageCaching:true,targetedConsensus:true,severityCondition:true,visionCenteringRescue:true,coreIdentityGate:true,adaptiveMarket:true,localFingerprintHints:true,manualCollectionOnly:true});
 const PERFORMANCE_BUDGET_MS=Object.freeze({analysis:30000,identity:15000,condition:15000,reference:10000,market:8000});
 let cameraStream=null,cameraSide=null,cameraTimer=null,cameraStableCount=0,cameraCaptureBusy=false;
 
@@ -17,7 +17,7 @@ let identityLocked = false, currentHistory = [], marketFilter = 'raw';
 let currentOpenedAt = null;
 let analysisPhotoKey = null, analysisDirty = false, localTrustedHintUsed = null;
 let analysisInFlight = false;
-let autoIdentityReady = false, autoCenteringReady = false, autoConditionReady = false;
+let autoIdentityReady = false, marketIdentityReady = false, autoCenteringReady = false, autoConditionReady = false;
 let centeringMeta = { front: null, back: null };
 let ocrRaw = { front: '', back: '' }, ocrSuggestions = {};
 
@@ -280,7 +280,7 @@ async function acceptPreparedPhoto(o,side){
     analysisSnapshot=null;analysisPhotoKey=null;analysisDirty=true;lastEstimate=null;autoConditionReady=false;marketData=null;ebayData=null;
   }else{
     if(currentCardId&&identityLocked&&!sameSavedDesign){currentCardId=null;currentOpenedAt=null;currentHistory=[]}
-    analysisSnapshot=null;analysisPhotoKey=null;analysisDirty=false;backendAnalysis=null;analysisMeta=null;ebayData=null;marketData=null;lastEstimate=null;autoConditionReady=false;autoIdentityReady=false;identityLocked=false;
+    analysisSnapshot=null;analysisPhotoKey=null;analysisDirty=false;backendAnalysis=null;analysisMeta=null;ebayData=null;marketData=null;lastEstimate=null;autoConditionReady=false;autoIdentityReady=false;marketIdentityReady=false;identityLocked=false;
   }
   centeringMeta[side]=null;$('identifyResults').classList.add('hidden');await measureCentering(side,true);await persistDraft();
   renderConditionSummary();renderEstimate();renderHistory();updateCollectionAction();renderRawValueHero();renderQuickSummary();
@@ -518,34 +518,52 @@ function renderConditionSummary(){
 
 function visionCenteringFor(side){
   const c=backendAnalysis?.condition?.sides?.[side]?.centering;
-  if(!c?.lr||!c?.tb||Number(c.confidence||0)<55)return null;
+  if(!c?.lr||!c?.tb||Number(c.confidence||0)<76)return null;
   return {lr:c.lr,tb:c.tb,confidence:Number(c.confidence||0)};
 }
 function pairWorst(pair){return Array.isArray(pair)?Math.max(...pair.map(Number)):null}
+function applyCenteringPairToInputs(side,vision){
+  const pre=side==='front'?'front':'back';
+  if(!vision?.lr||!vision?.tb)return false;
+  const lr=vision.lr.map(Number),tb=vision.tb.map(Number);
+  if(lr.some(x=>!Number.isFinite(x))||tb.some(x=>!Number.isFinite(x)))return false;
+  // centeringSide() uses relative border widths, so the ratios themselves are
+  // valid deterministic inputs for a vision-rescued measurement.
+  $(pre+'BorderL').value=lr[0].toFixed(2);
+  $(pre+'BorderR').value=lr[1].toFixed(2);
+  $(pre+'BorderT').value=tb[0].toFixed(2);
+  $(pre+'BorderB').value=tb[1].toFixed(2);
+  return true;
+}
 function reconcileCenteringWithVision(){
   for(const side of ['front','back']){
     const local=centeringMeta[side],vision=visionCenteringFor(side);
-    if(!local?.reliable||local.manual)continue;
+    if(local?.manual)continue;
+
+    // If deterministic local geometry failed, a high-confidence independent
+    // vision geometry result may rescue the measurement.
+    if(!local?.reliable){
+      if(vision){
+        const worst=Math.max(pairWorst(vision.lr)||50,pairWorst(vision.tb)||50);
+        const threshold=worst>70?90:76;
+        if(Number(vision.confidence||0)>=threshold&&applyCenteringPairToInputs(side,vision)){
+          centeringMeta[side]={reliable:true,confidence:Math.min(90,Number(vision.confidence||0)),manual:false,visionOnly:true,reason:'independent vision geometry rescued failed local measurement'};
+        }
+      }
+      continue;
+    }
+
+    if(!vision)continue;
     const c=centeringSide(side);
     const worstLR=pairWorst(c.lr),worstTB=pairWorst(c.tb);
     const extreme=worstLR>70||worstTB>70;
-
-    // Very asymmetric automatic measurements are exactly where an internal
-    // design line is most likely to be mistaken for the true printed border.
-    // Require an independent vision cross-check before accepting >70/30.
-    if(extreme&&!vision){
-      centeringMeta[side]={...local,reliable:false,needsCorroboration:true,confidence:Math.min(local.confidence||0,45),reason:'extreme automatic centering requires independent confirmation'};
-      continue;
-    }
-    if(!vision)continue;
-
     const dLR=Math.abs(worstLR-pairWorst(vision.lr)),dTB=Math.abs(worstTB-pairWorst(vision.tb));
     if(dLR>10||dTB>10){
       centeringMeta[side]={...local,reliable:false,visionConflict:true,confidence:Math.min(local.confidence||0,45),reason:'local border measurement disagreed with independent vision centering estimate'};
-    }else if(extreme&&(dLR>7||dTB>7||Number(vision.confidence||0)<65)){
+    }else if(extreme&&(dLR>7||dTB>7||Number(vision.confidence||0)<80)){
       centeringMeta[side]={...local,reliable:false,needsCorroboration:true,confidence:Math.min(local.confidence||0,45),reason:'extreme automatic centering was not confirmed strongly enough'};
     }else if(dLR<=5&&dTB<=5){
-      centeringMeta[side]={...local,visionConfirmed:true,confidence:Math.min(95,(local.confidence||0)+5),reason:'local border measurement independently cross-checked'};
+      centeringMeta[side]={...local,visionConfirmed:true,confidence:Math.min(95,Math.max(local.confidence||0,Number(vision.confidence||0))),reason:'local border measurement independently cross-checked'};
     }
   }
   autoCenteringReady=Boolean(centeringMeta.front?.reliable&&centeringMeta.back?.reliable);
@@ -558,11 +576,13 @@ async function applyBackendAnalysis(result,{skipSave=false,restoring=false,reide
   ebayData=result.ebay||null;marketData=result.market||null;
   const a=backendAnalysis||{},i=a.identity||{},c=a.condition||{},d=c.defects||{};
   const status=a.verification_status||'unverified';
+  const coreStatus=a.core_verification_status||status;
   const legacyVariantNeedsRefresh=String(result?.version||'').startsWith('3.')&&Boolean(String(i.variation||'').trim());
-  autoIdentityReady=Boolean(i.year&&i.set&&i.subject&&i.cardNo&&['verified','locked'].includes(status)&&a.variant_status!=='unresolved'&&!legacyVariantNeedsRefresh);
+  autoIdentityReady=Boolean(i.year&&i.set&&i.subject&&i.cardNo&&['verified','locked'].includes(coreStatus)&&!legacyVariantNeedsRefresh);
+  marketIdentityReady=Boolean(autoIdentityReady&&['verified','locked'].includes(status)&&a.variant_status!=='unresolved');
   if(legacyVariantNeedsRefresh)identityLocked=false;
-  else if(reidentify)identityLocked=['verified','locked'].includes(status)&&a.variant_status!=='unresolved';
-  else if((status==='verified'||status==='locked')&&a.variant_status!=='unresolved')identityLocked=true;
+  else if(reidentify)identityLocked=['verified','locked'].includes(coreStatus);
+  else if(['verified','locked'].includes(coreStatus))identityLocked=true;
   autoConditionReady=backendConditionReady();
   const fields={year:i.year??'',set:i.set||i.brand||'',subject:i.subject||'',cardNo:i.cardNo||'',variation:i.variation||'',serialNo:a.serial_number||''};
   for(const [id,val] of Object.entries(fields))if($(id))$(id).value=String(val);
@@ -829,7 +849,7 @@ async function retryConditionOnly(){
 }
 
 async function refreshMarketOnly(){
-  if(!autoIdentityReady){toast('Verify the card identity first');return}
+  if(!marketIdentityReady){toast('Resolve the exact parallel/variant before refreshing live market value');return}
   const {url,key}=backendConfig();if(!url||!key){toast('Backend is not configured');return}
   try{
     if($('refreshMarketBtn'))$('refreshMarketBtn').disabled=true;
@@ -869,7 +889,7 @@ function companyGrades(){
 }
 function fmtGrade(g,company){if(g===0)return 'NG?';if(company==='SGC'&&g===10)return '10';return String(g)}
 function renderEstimate(){
-  if(!autoIdentityReady||!autoConditionReady||!autoCenteringReady){lastEstimate=null;$('gradeResults').classList.remove('empty');const missing=[!autoIdentityReady?'a verified exact card identity':null,!autoConditionReady?'reliable visible-condition data':null,!autoCenteringReady?'reliable front/back centering':null].filter(Boolean).join(', ').replace(/, ([^,]*)$/,' and $1');$('gradeResults').innerHTML=`<div class="warn"><strong>Automatic grade not available yet.</strong> Card Lab is missing ${esc(missing)} and will not invent a grade.</div>`;renderQuickSummary();return}
+  if(!autoIdentityReady||!autoConditionReady||!autoCenteringReady){lastEstimate=null;$('gradeResults').classList.remove('empty');const missing=[!autoIdentityReady?'a verified core card identity':null,!autoConditionReady?'reliable visible-condition data':null,!autoCenteringReady?'reliable front/back centering':null].filter(Boolean).join(', ').replace(/, ([^,]*)$/,' and $1');$('gradeResults').innerHTML=`<div class="warn"><strong>Automatic grade not available yet.</strong> Card Lab is missing ${esc(missing)} and will not invent a grade.</div>`;renderQuickSummary();return}
   lastEstimate=companyGrades();const e=lastEstimate,q=e.confidence>=80?'good':e.confidence>=60?'warn':'bad';$('gradeResults').classList.remove('empty');$('gradeResults').innerHTML=`<div class="grade-grid"><div class="grade-box"><small>PSA estimate</small><b>${fmtGrade(e.psa,'PSA')}</b><small>whole-number scale</small></div><div class="grade-box"><small>BGS estimate</small><b>${fmtGrade(e.bgs,'BGS')}</b><small>C ${e.bgsSubs.centering} · Co ${e.bgsSubs.corners} · E ${e.bgsSubs.edges} · S ${e.bgsSubs.surface}</small></div><div class="grade-box"><small>CGC estimate</small><b>${fmtGrade(e.cgc,'CGC')}</b><small>published-scale approximation</small></div><div class="grade-box"><small>SGC estimate</small><b>${fmtGrade(e.sgc,'SGC')}</b><small>published-scale approximation</small></div></div><div class="confidence ${q}">Confidence ${e.confidence}% · Front ${e.centering.front.lr[0].toFixed(1)}/${e.centering.front.lr[1].toFixed(1)} L/R, ${e.centering.front.tb[0].toFixed(1)}/${e.centering.front.tb[1].toFixed(1)} T/B · Back ${e.centering.back.lr[0].toFixed(1)}/${e.centering.back.lr[1].toFixed(1)} L/R, ${e.centering.back.tb[0].toFixed(1)}/${e.centering.back.tb[1].toFixed(1)} T/B.</div><div class="hint">Pre-grade estimate only. Microscopic defects, alterations, texture/indentations and in-hand eye appeal may change a professional grade.</div>${e.flags.length?'<ul class="hint">'+e.flags.map(x=>`<li>${esc(x)}</li>`).join('')+'</ul>':''}`;;renderQuickSummary();
 }
 
@@ -925,7 +945,7 @@ function currentRecordBase(){
     backQuality:backData?.quality||null,
     identityLocked,
     verificationStatus:backendAnalysis?.verification_status||'unverified',variantStatus:backendAnalysis?.variant_status||'unknown',
-    verifiedIdentity:autoIdentityReady?cloneData(backendAnalysis?.identity||null):null,userSavedIdentity:cloneData(currentIdentityFields()),
+    verifiedIdentity:autoIdentityReady?cloneData(backendAnalysis?.identity||null):null,marketIdentityReady,userSavedIdentity:cloneData(currentIdentityFields()),
     identification:{backend:cloneData(backendAnalysis),meta:cloneData(analysisMeta),ebay:cloneData(ebayData),market:cloneData(marketData),suggestions:cloneData(ocrSuggestions),frontText:ocrRaw.front,backText:ocrRaw.back},
     analysisSnapshot:cloneData(analysisSnapshot),
     centering:cloneData(centering()),
@@ -1062,7 +1082,7 @@ async function resetForm(){
   ['frontCameraInput','frontLibraryInput','backCameraInput','backLibraryInput'].forEach(id=>{if($(id))$(id).value=''});
   if($('frontSavedStatus'))$('frontSavedStatus').textContent='No photo saved yet';if($('backSavedStatus'))$('backSavedStatus').textContent='No photo saved yet';$('frontQuality').innerHTML=$('backQuality').innerHTML='';
   frontData=backData=lastEstimate=null;analysisSnapshot=backendAnalysis=analysisMeta=ebayData=marketData=null;currentCardId=null;identityLocked=false;currentHistory=[];currentOpenedAt=null;analysisPhotoKey=null;analysisDirty=false;localTrustedHintUsed=null;marketFilter='raw';
-  centeringMeta={front:null,back:null};autoIdentityReady=autoCenteringReady=autoConditionReady=false;
+  centeringMeta={front:null,back:null};autoIdentityReady=marketIdentityReady=autoCenteringReady=autoConditionReady=false;
   await draftClear();$('identifyResults').classList.add('hidden');
   setIdentifyStatus('Add front and back photos. Card Lab will analyze the card without adding it to Collection.');
   $('gradeResults').className='results empty';$('gradeResults').textContent='Add front and back photos. Grade estimates will appear automatically.';

@@ -1,4 +1,4 @@
-# Card Lab v5.0.1 — GitHub Pages frontend
+# Card Lab v6.0.0 — GitHub Pages frontend
 
 Card Lab 5.0 is a major optimization release focused on accuracy, stage isolation, manual collection control, speed, and regression protection.
 
@@ -45,3 +45,9 @@ The header should show `v5.0.0`.
 - On iPhone/PWA, the photo buttons use the native system camera instead of an embedded getUserMedia camera.
 - This preserves full native focus/exposure behavior and avoids guided-camera launch/capture failures.
 - Existing post-capture photo-quality checks remain active.
+
+## v6.0.0 optimization pass
+- Core card identity can be trusted for pre-grading even while a parallel remains unresolved; market valuation stays blocked until the variant is safe.
+- High-confidence independent centering can rescue a failed local geometry measurement.
+- Condition results consume deterministic severity-to-score mapping from API v6 instead of trusting raw model numeric grades.
+- Native iPhone Take Photo workflow remains the default.
