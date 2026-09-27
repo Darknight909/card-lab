@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '7.0.0';
+const APP_VERSION = '8.0.0';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 const REF_CACHE_KEY='cardlab.referenceCache.v1', REGRESSION_KEY='cardlab.regressionCases.v1', TELEMETRY_KEY='cardlab.telemetry.v1';
@@ -518,10 +518,17 @@ function renderConditionSummary(){
 
 function visionCenteringFor(side){
   const c=backendAnalysis?.condition?.sides?.[side]?.centering;
-  if(!c?.lr||!c?.tb||Number(c.confidence||0)<78||c.verifiedReference!==true)return null;
-  const worst=Math.max(...c.lr.map(Number),...c.tb.map(Number));
-  if(worst>68)return null;
-  return {lr:c.lr,tb:c.tb,confidence:Number(c.confidence||0),verifiedReference:true};
+  if(!c?.lr||!c?.tb)return null;
+  const confidence=Number(c.confidence||0),worst=Math.max(...c.lr.map(Number),...c.tb.map(Number));
+  const verified=c.verifiedReference===true;
+  // Exact-reference matches may be accepted to 68/32. Independent printed-frame
+  // detection is accepted only at a stricter confidence/centering threshold.
+  if(verified){
+    if(confidence<78||worst>68)return null;
+  }else{
+    if(confidence<86||worst>62)return null;
+  }
+  return {lr:c.lr,tb:c.tb,confidence,verifiedReference:verified,source:c.source||null};
 }
 function pairWorst(pair){return Array.isArray(pair)?Math.max(...pair.map(Number)):null}
 function applyCenteringPairToInputs(side,vision){
@@ -555,13 +562,13 @@ function reconcileCenteringWithVision(){
       if(dLR>7||dTB>7){
         centeringMeta[side]={...local,reliable:false,visionConflict:true,confidence:Math.min(Number(local.confidence||0),45),reason:'local geometry disagreed with verified reference centering'};
       }else{
-        centeringMeta[side]={...local,visionConfirmed:true,verifiedReference:true,confidence:Math.min(95,Math.max(Number(local.confidence||0),Number(vision.confidence||0))),reason:'local geometry confirmed by verified exact-card reference'};
+        centeringMeta[side]={...local,visionConfirmed:true,verifiedReference:Boolean(vision.verifiedReference),confidence:Math.min(95,Math.max(Number(local.confidence||0),Number(vision.confidence||0))),reason:vision.verifiedReference?'local geometry confirmed by verified exact-card reference':'local geometry confirmed by independent printed-frame detection'};
       }
       continue;
     }
 
     if(vision&&applyCenteringPairToInputs(side,vision)){
-      centeringMeta[side]={reliable:true,confidence:Math.min(90,Number(vision.confidence||0)),manual:false,visionOnly:true,verifiedReference:true,reason:'verified exact-card reference rescued failed local centering'};
+      centeringMeta[side]={reliable:true,confidence:Math.min(90,Number(vision.confidence||0)),manual:false,visionOnly:true,verifiedReference:Boolean(vision.verifiedReference),reason:vision.verifiedReference?'verified exact-card reference rescued failed local centering':'high-confidence printed-frame detection rescued failed local centering'};
     }
   }
 
@@ -700,6 +707,59 @@ function chooseBorderPair(profile,size,gray,W,H,axis){
   return best;
 }
 
+
+function edgeBandMean(px,W,H,side){
+  const sums=[0,0,0];let n=0;
+  const x0=Math.round(W*.12),x1=Math.round(W*.88),y0=Math.round(H*.12),y1=Math.round(H*.88);
+  const bandX=Math.max(2,Math.round(W*.035)),bandY=Math.max(2,Math.round(H*.035));
+  const add=(x,y)=>{const i=(y*W+x)*4;sums[0]+=px[i];sums[1]+=px[i+1];sums[2]+=px[i+2];n++};
+  if(side==='left')for(let x=1;x<bandX;x++)for(let y=y0;y<y1;y+=2)add(x,y);
+  if(side==='right')for(let x=W-bandX;x<W-1;x++)for(let y=y0;y<y1;y+=2)add(x,y);
+  if(side==='top')for(let y=1;y<bandY;y++)for(let x=x0;x<x1;x+=2)add(x,y);
+  if(side==='bottom')for(let y=H-bandY;y<H-1;y++)for(let x=x0;x<x1;x+=2)add(x,y);
+  return n?sums.map(v=>v/n):null;
+}
+function colorDistance(r,g,b,mean){return Math.sqrt((r-mean[0])**2+(g-mean[1])**2+(b-mean[2])**2)}
+function outerBandTransition(px,W,H,side){
+  const mean=edgeBandMean(px,W,H,side);if(!mean)return null;
+  const vertical=side==='left'||side==='right',size=vertical?W:H;
+  const start=Math.max(3,Math.round(size*.018)),end=Math.round(size*.27),step=Math.max(1,Math.round(size/450));
+  const central0=vertical?Math.round(H*.10):Math.round(W*.10),central1=vertical?Math.round(H*.90):Math.round(W*.90);
+  const sampleAt=pos=>{
+    let sum=0,n=0,high=0;
+    for(let q=central0;q<central1;q+=3){
+      const x=side==='left'?pos:side==='right'?W-1-pos:q;
+      const y=side==='top'?pos:side==='bottom'?H-1-pos:q;
+      const i=(y*W+x)*4,d=colorDistance(px[i],px[i+1],px[i+2],mean);
+      sum+=d;n++;if(d>=24)high++;
+    }
+    return {diff:n?sum/n:0,continuity:n?high/n:0};
+  };
+  let best=null;
+  for(let pos=start;pos<=end;pos+=step){
+    const a=sampleAt(pos),b=sampleAt(Math.min(end,pos+step*2));
+    // Require a sustained change from the outer border color, not a single logo/text line.
+    if(a.diff>=26&&a.continuity>=.52&&b.diff>=23&&b.continuity>=.48){
+      best={pos,diff:a.diff,continuity:a.continuity};
+      break;
+    }
+  }
+  if(!best)return null;
+  return {...best,marginPct:best.pos/size*100};
+}
+function outerBandCentering(px,W,H,boundsConfidence=0){
+  const L=outerBandTransition(px,W,H,'left'),R=outerBandTransition(px,W,H,'right'),T=outerBandTransition(px,W,H,'top'),B=outerBandTransition(px,W,H,'bottom');
+  if(!L||!R||!T||!B)return null;
+  const widths={L:L.marginPct,R:R.marginPct,T:T.marginPct,B:B.marginPct};
+  if(Object.values(widths).some(v=>v<.8||v>28))return null;
+  const lr=pctPair(widths.L,widths.R),tb=pctPair(widths.T,widths.B),worst=Math.max(...lr,...tb);
+  const cont=Math.min(L.continuity,R.continuity,T.continuity,B.continuity);
+  const diff=Math.min(L.diff,R.diff,T.diff,B.diff);
+  const confidence=Math.round(clamp(45+cont*35+Math.min(15,(diff-24)*.9)+(Number(boundsConfidence||0)-60)*.12,0,92));
+  if(confidence<64)return null;
+  return {widths,lr,tb,worst,confidence,continuity:+cont.toFixed(2),colorDifference:+diff.toFixed(1)};
+}
+
 async function measureCentering(side,silent=false){
   const data=side==='front'?frontData:backData;if(!data){if(!silent)toast(`Take the ${side} photo first`);return null}
   try{
@@ -712,6 +772,20 @@ async function measureCentering(side,silent=false){
     const scale=Math.min(1,680/Math.max(iw,ih)),W=Math.max(160,Math.round(iw*scale)),H=Math.max(160,Math.round(ih*scale));
     const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,W,H);const px=ctx.getImageData(0,0,W,H).data,gray=new Float32Array(W*H);
     for(let i=0,j=0;i<px.length;i+=4,j++)gray[j]=.299*px[i]+.587*px[i+1]+.114*px[i+2];
+
+    // First try the outermost continuous color-band transition. This is much less
+    // likely than generic edge peaks to mistake an internal artwork box for the
+    // true printed border on framed cards.
+    const outer=outerBandCentering(px,W,H,bounds.confidence||0);
+    if(outer){
+      const pre=side==='front'?'front':'back',w=outer.widths;
+      $(pre+'BorderL').value=w.L.toFixed(2);$(pre+'BorderR').value=w.R.toFixed(2);$(pre+'BorderT').value=w.T.toFixed(2);$(pre+'BorderB').value=w.B.toFixed(2);
+      centeringMeta[side]={reliable:true,confidence:outer.confidence,manual:false,boundsConfidence:bounds.confidence,method:'outer-color-band',continuity:outer.continuity,colorDifference:outer.colorDifference,reason:'outermost continuous border-color transition detected'};
+      autoCenteringReady=Boolean(centeringMeta.front?.reliable&&centeringMeta.back?.reliable);updateCentering();
+      if(!silent)toast(`${side} centering measured · confidence ${outer.confidence}%`);
+      return centeringMeta[side];
+    }
+
     const v=new Float32Array(W),h=new Float32Array(H);
     for(let x=2;x<W-2;x++){let sum=0,n=0;for(let y=Math.round(H*.08);y<H*.92;y+=2){const i=y*W+x;sum+=Math.abs(gray[i+2]-gray[i-2]);n++}v[x]=n?sum/n:0}
     for(let y=2;y<H-2;y++){let sum=0,n=0;for(let x=Math.round(W*.08);x<W*.92;x+=2){const i=y*W+x;sum+=Math.abs(gray[i+2*W]-gray[i-2*W]);n++}h[y]=n?sum/n:0}
@@ -752,6 +826,55 @@ async function prepareAnalysisImage(side){
   const data=side==='front'?frontData:backData;if(!data)return null;
   if(!data.bounds)data.bounds=await detectCardBounds(data.dataUrl);
   return cropForAnalysis(data.dataUrl,data.bounds,1900,.91);
+}
+
+
+function drawInspectionCrop(ctx,img,sx,sy,sw,sh,dx,dy,dw,dh,label){
+  ctx.save();
+  ctx.fillStyle='#fff';ctx.fillRect(dx,dy,dw,dh);
+  const scale=Math.max(dw/sw,dh/sh);
+  const rw=sw*scale,rh=sh*scale;
+  const ox=dx+(dw-rw)/2,oy=dy+(dh-rh)/2;
+  ctx.drawImage(img,sx,sy,sw,sh,ox,oy,rw,rh);
+  ctx.strokeStyle='rgba(15,23,42,.7)';ctx.lineWidth=3;ctx.strokeRect(dx+1.5,dy+1.5,dw-3,dh-3);
+  ctx.fillStyle='rgba(255,255,255,.92)';ctx.fillRect(dx+6,dy+6,Math.min(dw-12,220),30);
+  ctx.fillStyle='#0f172a';ctx.font='bold 20px system-ui,-apple-system,sans-serif';ctx.fillText(label,dx+14,dy+28);
+  ctx.restore();
+}
+async function prepareConditionInspectionSheet(side){
+  const base=await prepareAnalysisImage(side);if(!base)return null;
+  const img=await loadImage(base),iw=img.naturalWidth||img.width,ih=img.naturalHeight||img.height;
+  const W=1400,H=1100,c=document.createElement('canvas');c.width=W;c.height=H;
+  const x=c.getContext('2d');x.fillStyle='#eef2f7';x.fillRect(0,0,W,H);
+  x.fillStyle='#0f172a';x.font='bold 28px system-ui,-apple-system,sans-serif';
+  x.fillText(`${side.toUpperCase()} CONDITION INSPECTION SHEET`,24,38);
+
+  // Full card on the left for surface/print registration context.
+  const fullX=24,fullY=58,fullW=500,fullH=1018;
+  const fit=Math.min(fullW/iw,fullH/ih),rw=iw*fit,rh=ih*fit;
+  x.fillStyle='#fff';x.fillRect(fullX,fullY,fullW,fullH);
+  x.drawImage(img,fullX+(fullW-rw)/2,fullY+(fullH-rh)/2,rw,rh);
+  x.strokeStyle='rgba(15,23,42,.65)';x.lineWidth=3;x.strokeRect(fullX+1.5,fullY+1.5,fullW-3,fullH-3);
+  x.fillStyle='rgba(255,255,255,.92)';x.fillRect(fullX+8,fullY+8,160,32);
+  x.fillStyle='#0f172a';x.font='bold 20px system-ui,-apple-system,sans-serif';x.fillText('FULL CARD',fullX+16,fullY+31);
+
+  // Enlarged corners.
+  const cx=.23*iw,cy=.23*ih;
+  const rightX=548,cellW=404,cellH=230,gap=16;
+  drawInspectionCrop(x,img,0,0,cx,cy,rightX,58,cellW,cellH,'TOP LEFT CORNER');
+  drawInspectionCrop(x,img,iw-cx,0,cx,cy,rightX+cellW+gap,58,cellW,cellH,'TOP RIGHT CORNER');
+  drawInspectionCrop(x,img,0,ih-cy,cx,cy,rightX,58+cellH+gap,cellW,cellH,'BOTTOM LEFT CORNER');
+  drawInspectionCrop(x,img,iw-cx,ih-cy,cx,cy,rightX+cellW+gap,58+cellH+gap,cellW,cellH,'BOTTOM RIGHT CORNER');
+
+  // Edge strips. Keep them centered to avoid corner duplication.
+  const edgeY=58+2*(cellH+gap)+4,wideW=824,wideH=128;
+  drawInspectionCrop(x,img,iw*.18,0,iw*.64,ih*.16,rightX,edgeY,wideW,wideH,'TOP EDGE');
+  drawInspectionCrop(x,img,iw*.18,ih*.84,iw*.64,ih*.16,rightX,edgeY+wideH+gap,wideW,wideH,'BOTTOM EDGE');
+  const sideY=edgeY+2*(wideH+gap),sideW=404,sideH=200;
+  drawInspectionCrop(x,img,0,ih*.22,iw*.18,ih*.56,rightX,sideY,sideW,sideH,'LEFT EDGE');
+  drawInspectionCrop(x,img,iw*.82,ih*.22,iw*.18,ih*.56,rightX+sideW+gap,sideY,sideW,sideH,'RIGHT EDGE');
+
+  return c.toDataURL('image/jpeg',.90);
 }
 
 async function normalizeIdentityImage(dataUrl){
@@ -796,12 +919,17 @@ async function identifyFromPhotos(reidentify=false){
   try{
     analysisInFlight=true;$('identifyBtn').disabled=true;if($('reidentifyBtn'))$('reidentifyBtn').disabled=true;
     setIdentifyStatus('<span class="spinner"></span>Measuring centering locally…');await ensureLocalCentering();
-    setIdentifyStatus('<span class="spinner"></span>Preparing normalized identity copies and original condition copies…');
-    const [frontForAnalysis,backForAnalysis,frontIdentity,backIdentity]=await Promise.all([prepareAnalysisImage('front'),prepareAnalysisImage('back'),prepareIdentityImage('front'),prepareIdentityImage('back')]);
+    setIdentifyStatus('<span class="spinner"></span>Preparing identity images and enlarged condition inspection sheets…');
+    const [frontForAnalysis,backForAnalysis,frontIdentity,backIdentity,frontInspection,backInspection]=await Promise.all([
+      prepareAnalysisImage('front'),prepareAnalysisImage('back'),
+      prepareIdentityImage('front'),prepareIdentityImage('back'),
+      prepareConditionInspectionSheet('front'),prepareConditionInspectionSheet('back')
+    ]);
     const lock=!reidentify?lockedIdentityPayload():null;
     setIdentifyStatus(lock?'<span class="spinner"></span>Identity locked · refreshing condition, grades, and eBay listings…':'<span class="spinner"></span>Reading card → verifying exact identity from trusted online sources → condition → eBay…');
     const payload={
       front:frontForAnalysis,back:backForAnalysis,frontIdentity,backIdentity,
+      frontInspection,backInspection,
       photoQuality:{front:frontData?.quality||null,back:backData?.quality||null},
       localCentering:currentCenteringPayload()
     };
@@ -833,9 +961,12 @@ async function retryConditionOnly(){
   try{
     if($('retryConditionBtn'))$('retryConditionBtn').disabled=true;
     setIdentifyStatus('<span class="spinner"></span>Retrying condition only · identity and eBay are not being rerun…');
-    const [front,back]=await Promise.all([prepareAnalysisImage('front'),prepareAnalysisImage('back')]);
+    const [front,back,frontInspection,backInspection]=await Promise.all([
+      prepareAnalysisImage('front'),prepareAnalysisImage('back'),
+      prepareConditionInspectionSheet('front'),prepareConditionInspectionSheet('back')
+    ]);
     const r=await fetch(`${url}/condition`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({
-      front,back,
+      front,back,frontInspection,backInspection,
       photoQuality:{front:frontData?.quality||null,back:backData?.quality||null},
       referenceImages:backendAnalysis?.reference_images||analysisSnapshot?.analysis?.reference_images||[],
       identity:backendAnalysis?.identity||null
