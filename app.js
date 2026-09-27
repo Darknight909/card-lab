@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '9.0.0';
+const APP_VERSION = '10.0.0';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 const REF_CACHE_KEY='cardlab.referenceCache.v1', REGRESSION_KEY='cardlab.regressionCases.v1', TELEMETRY_KEY='cardlab.telemetry.v1';
@@ -516,17 +516,24 @@ function renderConditionSummary(){
   el.innerHTML=`Corners ${esc(c.corners??'-')} · Edges ${esc(c.edges??'-')} · Surface ${esc(c.surface??'-')} · Focus ${esc(c.focus??'-')}${flags.length?`<br><span class="warn">Visible flags: ${esc(flags.join(', '))}</span>`:'<br><span class="good">No major visible defect flags detected in these photos.</span>'}`;
 }
 
+function suspiciousPerfectPairing(lr,tb,tol=.65){
+  if(!Array.isArray(lr)||!Array.isArray(tb))return false;
+  const near=p=>Math.abs(Number(p[0])-50)<tol&&Math.abs(Number(p[1])-50)<tol;
+  return near(lr)&&near(tb);
+}
 function visionCenteringFor(side){
   const c=backendAnalysis?.condition?.sides?.[side]?.centering;
   if(!c?.lr||!c?.tb)return null;
   const confidence=Number(c.confidence||0),worst=Math.max(...c.lr.map(Number),...c.tb.map(Number));
   const verified=c.verifiedReference===true;
+  const perfect=suspiciousPerfectPairing(c.lr,c.tb);
   // Exact-reference matches may be accepted to 68/32. Independent printed-frame
   // detection is accepted only at a stricter confidence/centering threshold.
   if(verified){
     if(confidence<78||worst>68)return null;
+    if(perfect&&confidence<90)return null;
   }else{
-    if(confidence<86||worst>62)return null;
+    if(confidence<86||worst>62||perfect)return null;
   }
   return {lr:c.lr,tb:c.tb,confidence,verifiedReference:verified,source:c.source||null};
 }
@@ -553,6 +560,11 @@ function reconcileCenteringWithVision(){
       const c=centeringSide(side);
       const worstLR=pairWorst(c.lr),worstTB=pairWorst(c.tb);
       const extreme=worstLR>68||worstTB>68;
+      const suspiciousPerfect=suspiciousPerfectPairing(c.lr,c.tb);
+      if(suspiciousPerfect&&!(vision?.verifiedReference&&Number(vision.confidence||0)>=90)){
+        centeringMeta[side]={...local,reliable:false,confidence:Math.min(Number(local.confidence||0),45),reason:'near-perfect automatic centering requires verified exact-card reference confirmation'};
+        continue;
+      }
       if(extreme&&!vision){
         centeringMeta[side]={...local,reliable:false,confidence:Math.min(Number(local.confidence||0),45),reason:'extreme local centering rejected without verified exact-card reference'};
         continue;
@@ -777,7 +789,7 @@ async function measureCentering(side,silent=false){
     // likely than generic edge peaks to mistake an internal artwork box for the
     // true printed border on framed cards.
     const outer=outerBandCentering(px,W,H,bounds.confidence||0);
-    if(outer){
+    if(outer && !suspiciousPerfectPairing(outer.lr,outer.tb)){
       const pre=side==='front'?'front':'back',w=outer.widths;
       $(pre+'BorderL').value=w.L.toFixed(2);$(pre+'BorderR').value=w.R.toFixed(2);$(pre+'BorderT').value=w.T.toFixed(2);$(pre+'BorderB').value=w.B.toFixed(2);
       centeringMeta[side]={reliable:true,confidence:outer.confidence,manual:false,boundsConfidence:bounds.confidence,method:'outer-color-band',continuity:outer.continuity,colorDifference:outer.colorDifference,reason:'outermost continuous border-color transition detected'};
