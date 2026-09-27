@@ -9,14 +9,14 @@
   <meta name="apple-mobile-web-app-title" content="Card Lab" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-180.png" />
-  <link rel="stylesheet" href="styles.css?v=3.0.1" />
+  <link rel="stylesheet" href="styles.css?v=4.0.0" />
   <title>Card Grade & Collection Lab</title>
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Verified identity + pre-grading + market · v3.0.1</p>
+      <p>Verified identity + pre-grading + market · v4.0.0</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -151,6 +151,10 @@
 
       <div class="card-block">
         <h2>6. Value / current eBay listings <span class="auto-tag">automatic</span></h2>
+        <div id="rawValueHero" class="value-hero">
+          <div><small>Raw card value</small><strong>Not available yet</strong></div>
+          <span class="hint">Verified market matches will establish the value.</span>
+        </div>
         <div class="row wrap market-toolbar">
           <div id="marketTabs" class="market-tabs" aria-label="eBay listing filter">
             <button type="button" class="active" data-market-filter="raw">Raw</button>
@@ -163,7 +167,8 @@
         <div id="saveStatus" class="hint">A card is saved automatically only after exact identity verification.</div>
         <details class="optional-controls"><summary>Optional bookkeeping</summary>
           <div class="grid two">
-            <label>Acquisition cost ($)<input id="cost" type="number" min="0" step="0.01" placeholder="Optional" /></label>
+            <label>Price paid ($)<input id="cost" type="number" min="0" step="0.01" placeholder="Optional" /></label>
+            <label>Purchase date<input id="purchaseDate" type="date" /></label>
             <label>Notes<input id="notes" placeholder="Optional" /></label>
           </div>
         </details>
@@ -229,6 +234,15 @@
         <p class="hint">If you ever must reinstall the app, a full recovery export can restore the Cloudflare settings and draft photos.</p>
       </div>
       <div class="card-block">
+        <h2>Diagnostic mode</h2>
+        <p class="hint">Shows the most recent stage timings, model path, field confidence, and evidence-gate status. This does not send additional data or rerun analysis.</p>
+        <div class="row wrap"><button id="runSelfTestBtn" class="secondary compact" type="button">Run regression self-test</button><span id="selfTestStatus" class="hint"></span></div>
+        <details>
+          <summary>Show latest diagnostics</summary>
+          <pre id="diagnosticOutput" class="diagnostic-output">No analysis diagnostics yet.</pre>
+        </details>
+      </div>
+      <div class="card-block">
         <h2>Install on iPhone</h2>
         <p>Open the hosted app in DuckDuckGo. If "Add to Home Screen" is available, use it. If not, open the same URL once in Safari, Share → Add to Home Screen → Open as Web App. After installation it launches from its own icon.</p>
       </div>
@@ -236,6 +250,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=3.0.1" defer></script>
+  <script src="app.js?v=4.0.0" defer></script>
 </body>
 </html>

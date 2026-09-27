@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '3.0.1';
+const APP_VERSION = '4.0.0';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 
@@ -39,9 +39,18 @@ function draftClear(){return new Promise((res,rej)=>{const r=draftStore('readwri
 
 
 function savedIdentityTrusted(card){
-  const status=card?.identification?.backend?.verification_status;
+  const backend=card?.identification?.backend||{};
+  const status=backend.verification_status;
   const ver=String(card?.identification?.meta?.version||card?.analysisSnapshot?.version||'');
-  return ver.startsWith('3.')&&['verified','locked'].includes(status);
+  if(!['verified','locked'].includes(status))return false;
+  if(ver.startsWith('4.'))return backend.variant_status!=='unresolved';
+  if(ver.startsWith('3.')){
+    // v3 predates the strict parallel/serial evidence gate. Force one re-identification
+    // for saved cards that already carry a variation so an old parallel guess cannot stay locked.
+    if(String(card?.variation||backend?.identity?.variation||'').trim())return false;
+    return true;
+  }
+  return false;
 }
 
 async function persistDraft(){
@@ -83,10 +92,10 @@ async function restoreDraft(){
     if(frontData&&!centeringMeta.front?.manual)await measureCentering('front',true);
     if(backData&&!centeringMeta.back?.manual)await measureCentering('back',true);
     updateCentering();
-    if(d.analysisSnapshot?.version && String(d.analysisSnapshot.version).startsWith('3.')){
+    if(d.analysisSnapshot?.version && (String(d.analysisSnapshot.version).startsWith('3.')||String(d.analysisSnapshot.version).startsWith('4.'))){
       analysisSnapshot=d.analysisSnapshot;
       await applyBackendAnalysis(d.analysisSnapshot,{skipSave:true,restoring:true});
-      setIdentifyStatus(identityLocked?'Saved card restored · identity locked · Re-analyze refreshes grade and eBay without re-identifying.':'Previous Card Lab 3.0 analysis restored locally · tap Re-analyze card to refresh.');
+      setIdentifyStatus(identityLocked?'Saved card restored · identity locked · Re-analyze refreshes grade and eBay without re-identifying.':'Previous Card Lab analysis restored locally · tap Re-analyze card to refresh.');
     }else if(frontData||backData){
       setIdentifyStatus('Draft photos restored locally · tap Re-analyze card when both photos are ready.');
     }
@@ -204,9 +213,26 @@ async function testBackend(){
     if(!j.googleVisionConfigured)throw new Error('Google Vision secret is not configured');
     if(!j.workersAIConfigured)throw new Error('Cloudflare AI binding is not configured');
     if(key){const r=await fetch(`${url}/analyze`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({}),cache:'no-store'});if(r.status===401)throw new Error('API key rejected')}
-    $('backendStatus').textContent=`Connected · API v${j.version||'?'} · Google Vision ready${j.tavilyConfigured?' · trusted-source web verification ready':' · Tavily not configured'}${j.ebayConfigured?' · eBay API connected':' · eBay API not connected (fallback only)'}`;
+    $('backendStatus').textContent=`Connected · API v${j.version||'?'} · Google Vision ready${j.tavilyConfigured?' · trusted-source web verification ready':' · Tavily not configured'}${j.ebayConfigured?` · eBay API connected (${j.ebayEnvironment||'environment unknown'})`:' · eBay API not connected (fallback only)'}`;
     toast('Card Lab backend connected');
   }catch(e){$('backendStatus').textContent=`Connection failed: ${e.message||e}`;toast('Backend connection failed')}
+}
+
+async function runRegressionSelfTest(){
+  const {url,key}=backendConfig();if(!url||!key){toast('Backend is not configured');return}
+  const status=$('selfTestStatus');if(status)status.textContent='Running…';
+  try{
+    const r=await fetch(`${url}/selftest`,{headers:{'Authorization':`Bearer ${key}`},cache:'no-store'});
+    const j=await r.json().catch(()=>({}));
+    const st=j.selftest||{};
+    if($('diagnosticOutput'))$('diagnosticOutput').textContent=JSON.stringify({apiVersion:j.version||null,selftest:st},null,2);
+    if(!r.ok||!j.ok)throw new Error(`Self-test failed (${st.passed||0}/${st.total||0})`);
+    if(status)status.textContent=`Passed ${st.passed}/${st.total}`;
+    toast(`Regression self-test passed ${st.passed}/${st.total}`);
+  }catch(e){
+    if(status)status.textContent=e.message||String(e);
+    toast('Regression self-test failed');
+  }
 }
 
 function nearestOption(selectId,value){const el=$(selectId);if(!el||value==null)return;const vals=[...el.options].map(o=>+o.value).filter(Number.isFinite);if(!vals.length)return;let best=vals[0];for(const v of vals)if(Math.abs(v-value)<Math.abs(best-value))best=v;el.value=String(best)}
@@ -223,9 +249,51 @@ function formatDateTime(v){
   if(!v)return '';try{return new Date(v).toLocaleString([], {dateStyle:'medium',timeStyle:'short'})}catch{return String(v)}
 }
 
+function marketRawStats(){return marketData?.stats?.raw||null}
+function currentPricePaid(){
+  const n=Number($('cost')?.value);
+  return Number.isFinite(n)&&n>0?n:null;
+}
+function valueQualityLabel(q){
+  const n=Number(q)||0;
+  return n>=80?'strong':n>=60?'moderate':n>=40?'limited':'weak';
+}
+function renderRawValueHero(){
+  const el=$('rawValueHero');if(!el)return;
+  const s=marketRawStats();
+  if(!s||!Number.isFinite(Number(s.value??s.median))){
+    el.innerHTML='<div><small>Raw card value</small><strong>Not available yet</strong></div><span class="hint value-meta">Verified raw-market matches will establish the value.</span>';
+    return;
+  }
+  const value=Number(s.value??s.median),paid=currentPricePaid(),delta=paid!=null?value-paid:null;
+  const rangeLow=Number.isFinite(Number(s.trimmedLow))?Number(s.trimmedLow):Number(s.low);
+  const rangeHigh=Number.isFinite(Number(s.trimmedHigh))?Number(s.trimmedHigh):Number(s.high);
+  const quality=Number(s.quality||0);
+  const deltaText=delta==null?'':`${delta>=0?'+':''}${formatMoney(delta)} vs. price paid`;
+  el.innerHTML=`<div><small>Raw card value</small><strong>${formatMoney(value)}</strong></div><div class="hint value-meta">${quality?`${esc(valueQualityLabel(quality))} support · `:''}${s.sampleSize||0} match${Number(s.sampleSize)===1?'':'es'}${Number.isFinite(rangeLow)&&Number.isFinite(rangeHigh)?` · ${formatMoney(rangeLow)}–${formatMoney(rangeHigh)}`:''}${deltaText?`<br><b>${esc(deltaText)}</b>`:''}${s.includesShipping?' · incl. listed shipping':''}</div>`;
+}
+function renderDiagnostics(result=analysisSnapshot){
+  const el=$('diagnosticOutput');if(!el)return;
+  const d=result?.diagnostics||{};
+  const a=result?.analysis||backendAnalysis||{};
+  const view={
+    appVersion:APP_VERSION,
+    apiVersion:result?.version||analysisMeta?.version||null,
+    timingsMs:d.timingsMs||null,
+    conditionModels:d.conditionModels||null,
+    photoQuality:d.photoQuality||null,
+    verificationStatus:a.verification_status||null,
+    variantStatus:a.variant_status||null,
+    fieldConfidence:a.field_confidence||null,
+    evidenceGraph:a.evidence_graph||null,
+    pipeline:result?.pipeline||analysisMeta?.pipeline||null,
+  };
+  el.textContent=JSON.stringify(view,null,2);
+}
+
 function renderBackendSummary(a,ebay){
   const i=a.identity||{},c=a.condition||{};const identConf=Math.round(a.identity_confidence||0),condConf=Math.round(a.condition_confidence||0);
-  const status=a.verification_status||'unverified';
+  const status=a.verification_status||'unverified',variant=a.variant_status||'unknown';
   const statusText=status==='verified'?'Verified online':status==='locked'?'Verified identity locked':status==='probable'?'Probable — review':'Not verified';
   const statusClass=['verified','locked'].includes(status)?'good':'warn';
   const marketCount=(marketData?.items||[]).length;
@@ -233,16 +301,19 @@ function renderBackendSummary(a,ebay){
   const serial=a.serial_number?` · serial ${a.serial_number}`:'';
   const sources=(a.sources||[]).filter(x=>safeHttpUrl(x.url));
   const sourceHtml=sources.length?`<details open><summary>Verified identity sources</summary><ul class="source-list">${sources.map(x=>`<li><a href="${esc(safeHttpUrl(x.url))}" target="_blank" rel="noopener">${esc(x.title||x.domain||'Source')}</a><span> · ${esc(x.domain||'')}</span></li>`).join('')}</ul></details>`:'';
-  const evidence=(a.evidence||[]).length?`<details><summary>Why Card Lab accepted this identity</summary><ul class="hint">${a.evidence.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:'';
+  const evidence=(a.evidence||[]).length?`<details><summary>Why Card Lab accepted / withheld fields</summary><ul class="hint">${a.evidence.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:'';
   const notes=(c.notes||[]).length?`<details><summary>Visible-condition notes</summary><ul class="hint">${c.notes.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:'';
+  const fc=a.field_confidence||{};
+  const confidenceHtml=Object.keys(fc).length?`<div class="field-confidence">${Object.entries(fc).filter(([,v])=>Number(v)>0).map(([k,v])=>`<span>${esc(k)} ${Math.round(Number(v))}%</span>`).join('')}</div>`:'';
+  const variantMsg=variant==='unresolved'?'<div class="warn"><strong>Parallel not accepted.</strong> Card Lab found conflicting/incomplete variant evidence and intentionally left it unresolved.</div>':variant==='verified'?'<div class="good"><strong>Parallel verified.</strong> Serial/source evidence agrees.</div>':'';
   $('identifyResults').classList.remove('hidden');
   $('identifyResults').innerHTML=`<div class="suggestion">${esc([i.year,i.set||i.brand,i.subject,i.cardNo?`#${i.cardNo}`:'',i.variation].filter(Boolean).join(' · ')||'Card analyzed')}</div>
     <div class="${statusClass}"><strong>${esc(statusText)}</strong> · identity confidence ${identConf}%${serial}</div>
+    ${confidenceHtml}${variantMsg}
     <div class="hint stage-list">Visible-condition confidence ${condConf}%${marketMsg}</div>
     ${a.needs_review?`<div class="warn"><strong>Review:</strong> ${esc(a.review_reason||'Identity needs additional corroboration.')}</div>`:''}
     ${sourceHtml}${evidence}${notes}`;
 }
-
 function marketItemsForFilter(){
   if(!marketData)return [];
   if(marketFilter==='graded')return marketData.gradedItems||[];
@@ -250,7 +321,7 @@ function marketItemsForFilter(){
   return marketData.rawItems||marketData.items||[];
 }
 function renderMarket(market=marketData,ebay=ebayData){
-  marketData=market||marketData||null;const root=$('marketResults');if(!root)return;
+  marketData=market||marketData||null;renderRawValueHero();const root=$('marketResults');if(!root)return;
   const searchUrl=safeHttpUrl(marketData?.searchUrl||ebay?.searchUrl||'');
   const items=marketItemsForFilter().slice(0,12);
   const live=Boolean(marketData?.live);
@@ -258,7 +329,7 @@ function renderMarket(market=marketData,ebay=ebayData){
   const stats=marketFilter==='graded'?marketData?.stats?.graded:marketFilter==='all'?null:marketData?.stats?.raw;
   const status=`<div class="market-status ${live?'good':'warn'}"><strong>${live?'Live eBay Browse API':'Fallback market results'}</strong>${source?` · ${esc(source)}`:''}${marketData?.refreshedAt?` · refreshed ${esc(formatDateTime(marketData.refreshedAt))}`:''}</div>`;
   const tabs=$('marketTabs');if(tabs)tabs.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.marketFilter===marketFilter));
-  const statsHtml=stats?`<div class="market-stats"><span>Matches <b>${stats.sampleSize}</b></span><span>Low <b>${formatMoney(stats.low)}</b></span><span>Median <b>${formatMoney(stats.median)}</b></span><span>High <b>${formatMoney(stats.high)}</b></span></div>`:'';
+  const statsHtml=stats?`<div class="market-stats"><span>Matches <b>${stats.sampleSize}</b></span><span>Value <b>${formatMoney(stats.value??stats.median)}</b></span><span>Credible low <b>${formatMoney(stats.trimmedLow??stats.low)}</b></span><span>Credible high <b>${formatMoney(stats.trimmedHigh??stats.high)}</b></span></div><div class="hint">Market support: ${esc(valueQualityLabel(stats.quality))}${stats.includesShipping?' · listing price + stated shipping':''}</div>`:'';
   if(!items.length){
     root.classList.remove('empty');
     root.innerHTML=`${status}${statsHtml}<div class="hint">No sufficiently close ${esc(marketFilter)} listing matches found.${searchUrl?` <a href="${esc(searchUrl)}" target="_blank" rel="noopener">Open full eBay search</a>`:''}</div>${marketData?.note?`<div class="hint">${esc(marketData.note)}</div>`:''}`;
@@ -324,20 +395,22 @@ function reconcileCenteringWithVision(){
 
 async function applyBackendAnalysis(result,{skipSave=false,restoring=false,reidentify=false}={}){
   backendAnalysis=result.analysis||null;
-  analysisMeta={version:result.version,googleVision:result.googleVision||null,webLookup:result.webLookup||null,pipeline:result.pipeline||null};
+  analysisMeta={version:result.version,googleVision:result.googleVision||null,webLookup:result.webLookup||null,pipeline:result.pipeline||null,diagnostics:result.diagnostics||null};
   ebayData=result.ebay||null;marketData=result.market||null;
   const a=backendAnalysis||{},i=a.identity||{},c=a.condition||{},d=c.defects||{};
   const status=a.verification_status||'unverified';
-  autoIdentityReady=Boolean(i.year&&i.set&&i.subject&&i.cardNo&&['verified','locked'].includes(status));
-  if(reidentify)identityLocked=['verified','locked'].includes(status);
-  else if(status==='verified'||status==='locked')identityLocked=true;
+  const legacyVariantNeedsRefresh=String(result?.version||'').startsWith('3.')&&Boolean(String(i.variation||'').trim());
+  autoIdentityReady=Boolean(i.year&&i.set&&i.subject&&i.cardNo&&['verified','locked'].includes(status)&&a.variant_status!=='unresolved'&&!legacyVariantNeedsRefresh);
+  if(legacyVariantNeedsRefresh)identityLocked=false;
+  else if(reidentify)identityLocked=['verified','locked'].includes(status)&&a.variant_status!=='unresolved';
+  else if((status==='verified'||status==='locked')&&a.variant_status!=='unresolved')identityLocked=true;
   autoConditionReady=backendConditionReady();
   const fields={year:i.year??'',set:i.set||i.brand||'',subject:i.subject||'',cardNo:i.cardNo||'',variation:i.variation||'',serialNo:a.serial_number||''};
   for(const [id,val] of Object.entries(fields))if($(id))$(id).value=String(val);
   if(i.category&&[...$('category').options].some(o=>o.value===i.category))$('category').value=i.category;
   if(autoConditionReady){nearestOption('corners',c.corners);nearestOption('edges',c.edges);nearestOption('surface',c.surface);nearestOption('focusScore',c.focus)}
   $('crease').checked=!!d.crease;$('dent').checked=!!d.dent;$('stain').checked=!!d.stain;$('scratch').checked=!!d.scratch;$('printline').checked=!!d.printline;$('mark').checked=!!d.mark;$('altered').checked=!!d.possible_alteration;$('confirmed').checked=false;
-  await ensureLocalCentering();reconcileCenteringWithVision();renderConditionSummary();renderEstimate();renderBackendSummary(a,result.ebay);renderMarket(result.market,result.ebay);
+  await ensureLocalCentering();reconcileCenteringWithVision();renderConditionSummary();renderEstimate();renderBackendSummary(a,result.ebay);renderMarket(result.market,result.ebay);renderDiagnostics(result);
   if(!restoring)analysisSnapshot=result;
   if(autoIdentityReady&&!skipSave){
     await saveCardAutomatic({appendHistory:true,reidentify});
@@ -490,7 +563,7 @@ function updateCentering(){
 async function prepareAnalysisImage(side){
   const data=side==='front'?frontData:backData;if(!data)return null;
   if(!data.bounds)data.bounds=await detectCardBounds(data.dataUrl);
-  return cropForAnalysis(data.dataUrl,data.bounds,1600,.90);
+  return cropForAnalysis(data.dataUrl,data.bounds,1900,.91);
 }
 async function analyzeRequest(url,key,payload){
   let lastErr=null;for(let attempt=1;attempt<=3;attempt++){
@@ -522,12 +595,13 @@ async function identifyFromPhotos(reidentify=false){
     const [frontForAnalysis,backForAnalysis]=await Promise.all([prepareAnalysisImage('front'),prepareAnalysisImage('back')]);
     const lock=!reidentify?lockedIdentityPayload():null;
     setIdentifyStatus(lock?'<span class="spinner"></span>Identity locked · refreshing condition, grades, and eBay listings…':'<span class="spinner"></span>Reading card → verifying exact identity from trusted online sources → condition → eBay…');
-    const payload={front:frontForAnalysis,back:backForAnalysis};
+    const payload={front:frontForAnalysis,back:backForAnalysis,photoQuality:{front:frontData?.quality||null,back:backData?.quality||null}};
     if(lock){
       payload.identityLock=lock;
       payload.identityConfidence=backendAnalysis?.identity_confidence||98;
       payload.identitySources=backendAnalysis?.sources||analysisSnapshot?.analysis?.sources||[];
       payload.serialNumber=$('serialNo')?.value||backendAnalysis?.serial_number||null;
+      payload.referenceImages=backendAnalysis?.reference_images||analysisSnapshot?.analysis?.reference_images||[];
     }
     const j=await analyzeRequest(url,key,payload);
     await applyBackendAnalysis(j,{reidentify});
@@ -550,7 +624,7 @@ async function refreshMarketOnly(){
     const front=frontData?await prepareAnalysisImage('front'):null;
     const r=await fetch(`${url}/market`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({identity,front}),cache:'no-store'});
     const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||`HTTP ${r.status}`);
-    marketData=j.market||null;ebayData=j.ebay||null;renderMarket();
+    marketData=j.market||null;ebayData=j.ebay||null;renderMarket();if(j.diagnostics&&analysisSnapshot){analysisSnapshot.diagnostics={...(analysisSnapshot.diagnostics||{}),marketRefresh:j.diagnostics};renderDiagnostics(analysisSnapshot)}
     if(currentCardId){
       const card=await dbGet(currentCardId);if(card){card.market=marketData;card.marketRefreshedAt=marketData?.refreshedAt||new Date().toISOString();card.updatedAt=new Date().toISOString();await dbPut(card)}
     }
@@ -620,6 +694,8 @@ function currentRecordBase(){
     variation:$('variation').value,
     serialNo:$('serialNo')?.value||'',
     category:$('category').value,
+    purchasePrice:+$('cost').value||0,
+    purchaseDate:$('purchaseDate')?.value||'',
     cost:+$('cost').value||0,
     notes:$('notes').value,
     front:frontData?.dataUrl||null,
@@ -685,7 +761,7 @@ function setFormFromSaved(card){
   const fields={year:card.year||'',set:card.set||'',subject:card.subject||'',cardNo:card.cardNo||'',variation:card.variation||'',serialNo:card.serialNo||''};
   for(const [id,v] of Object.entries(fields))if($(id))$(id).value=v;
   if(card.category&&[...$('category').options].some(o=>o.value===card.category))$('category').value=card.category;
-  $('cost').value=Number(card.cost)||'';$('notes').value=card.notes||'';
+  $('cost').value=Number(card.purchasePrice??card.cost)||'';if($('purchaseDate'))$('purchaseDate').value=card.purchaseDate||'';$('notes').value=card.notes||'';renderRawValueHero();
   const s=card.scores||{};for(const [id,k] of [['corners','corners'],['edges','edges'],['surface','surface'],['focusScore','focus']])if(Number.isFinite(Number(s[k])))nearestOption(id,s[k]);
   const d=card.defects||{};for(const id of ['crease','dent','stain','scratch','printline','mark','altered','confirmed'])if($(id))$(id).checked=Boolean(d[id]);
   const cv=card.centering||{};
@@ -704,9 +780,9 @@ async function openSavedCard(id){
   backendAnalysis=card.identification?.backend||null;analysisMeta=card.identification?.meta||null;ebayData=card.identification?.ebay||null;marketData=card.market||card.identification?.market||null;analysisSnapshot=card.analysisSnapshot||null;
   centeringMeta=card.centeringMeta||{front:null,back:null};lastEstimate=card.estimate||null;
   const status=backendAnalysis?.verification_status||'unverified';autoIdentityReady=Boolean(identityLocked&&card.year&&card.set&&card.subject&&card.cardNo);autoConditionReady=backendConditionReady()||Boolean(card.defects?.confirmed);
-  updateCentering();renderConditionSummary();renderEstimate();if(backendAnalysis)renderBackendSummary(backendAnalysis,ebayData);renderMarket();renderHistory();
-  if($('saveStatus'))$('saveStatus').textContent=identityLocked?`Saved locally · card #${card.id} · ${currentHistory.length} analysis ${currentHistory.length===1?'snapshot':'snapshots'} · verified identity locked`:`Saved locally · card #${card.id} · legacy/unverified identity must be verified by Card Lab 3.0`;
-  setIdentifyStatus(identityLocked?'Saved card opened · Re-analyze refreshes condition, grades, and eBay while keeping the verified identity. Use Re-identify only if the identity is wrong.':'Saved card opened from an older/unverified analysis · tap Re-identify card once to verify it with the Card Lab 3.0 source pipeline.');
+  updateCentering();renderConditionSummary();renderEstimate();if(backendAnalysis)renderBackendSummary(backendAnalysis,ebayData);renderMarket();renderHistory();renderDiagnostics(analysisSnapshot);
+  if($('saveStatus'))$('saveStatus').textContent=identityLocked?`Saved locally · card #${card.id} · ${currentHistory.length} analysis ${currentHistory.length===1?'snapshot':'snapshots'} · verified identity locked`:`Saved locally · card #${card.id} · legacy/unverified identity must be verified by the current Card Lab pipeline`;
+  setIdentifyStatus(identityLocked?'Saved card opened · Re-analyze refreshes condition, grades, and eBay while keeping the verified identity. Use Re-identify only if the identity is wrong.':'Saved card opened from an older/unverified analysis · tap Re-identify card once to verify it with the current source pipeline.');
   document.querySelector('[data-tab="grade"]').click();window.scrollTo({top:0,behavior:'smooth'});await persistDraft();
 }
 async function deleteHistoryEntry(entryId){
@@ -731,14 +807,14 @@ function renderHistory(){
     const e=h.estimate||{},c=h.centering||{},raw=h.market?.stats?.raw;
     const grades=[`PSA ${fmtGrade(e.psa??'-','PSA')}`,`BGS ${fmtGrade(e.bgs??'-','BGS')}`,`CGC ${fmtGrade(e.cgc??'-','CGC')}`,`SGC ${fmtGrade(e.sgc??'-','SGC')}`].join(' · ');
     const cent=c.front?.lr?`Front ${c.front.lr[0].toFixed(1)}/${c.front.lr[1].toFixed(1)} · Back ${c.back?.lr?.[0]?.toFixed?.(1)??'-'}/${c.back?.lr?.[1]?.toFixed?.(1)??'-'}`:'Centering unavailable';
-    const market=raw?`Raw eBay median ${formatMoney(raw.median)} (${raw.sampleSize})`:'No raw market snapshot';
+    const market=raw?`Raw value ${formatMoney(raw.value??raw.median)} (${raw.sampleSize} matches)`:'No raw market snapshot';
     return `<div class="history-item"><div><strong>${esc(formatDateTime(h.analyzedAt))}${idx===0?' · newest':''}</strong><div class="hint">${esc(grades)}</div><div class="hint">${esc(cent)} · ${esc(market)}</div></div><button class="danger compact" data-history-delete="${esc(h.id)}">Delete</button></div>`;
   }).join('');
   root.querySelectorAll('[data-history-delete]').forEach(b=>b.onclick=async()=>{if(confirm('Delete only this analysis-history entry? The card and other history entries will remain.'))await deleteHistoryEntry(b.dataset.historyDelete)});
 }
 
 async function resetForm(){
-  document.querySelectorAll('#grade input[type=text],#grade input[type=number]').forEach(x=>x.value='');
+  document.querySelectorAll('#grade input[type=text],#grade input[type=number],#grade input[type=date]').forEach(x=>x.value='');
   ['frontBorderL','frontBorderR','frontBorderT','frontBorderB','backBorderL','backBorderR','backBorderT','backBorderB'].forEach(id=>$(id).value=5);
   document.querySelectorAll('#grade input[type=checkbox]').forEach(x=>x.checked=false);
   $('corners').value=$('edges').value=$('surface').value='9';$('focusScore').value='9';$('category').value='Sports';
@@ -750,10 +826,40 @@ async function resetForm(){
   await draftClear();$('identifyResults').classList.add('hidden');
   setIdentifyStatus('Add front and back photos. Card Lab will verify the exact card from trusted online sources before grading or saving it.');
   $('gradeResults').className='results empty';$('gradeResults').textContent='Add front and back photos. Grade estimates will appear automatically.';
-  if($('marketResults')){$('marketResults').className='results empty';$('marketResults').textContent='Verified current listing matches will appear automatically after identification.'}
+  if($('marketResults')){$('marketResults').className='results empty';$('marketResults').textContent='Verified current listing matches will appear automatically after identification.'}renderRawValueHero();renderDiagnostics(null);
   if($('conditionAutoSummary'))$('conditionAutoSummary').textContent='Waiting for analysis.';
   if($('saveStatus'))$('saveStatus').textContent='A card is saved automatically only after exact identity verification.';
   renderHistory();updateCentering();window.scrollTo({top:0,behavior:'smooth'});
+}
+
+async function saveOpenCardBookkeeping(){
+  if(!currentCardId)return;
+  const card=await dbGet(currentCardId);if(!card)return;
+  const n=Number($('cost')?.value);
+  card.purchasePrice=Number.isFinite(n)&&n>=0?n:0;
+  card.cost=card.purchasePrice;
+  card.purchaseDate=$('purchaseDate')?.value||'';
+  card.notes=$('notes')?.value||'';
+  card.updatedAt=new Date().toISOString();
+  await dbPut(card);
+  renderRawValueHero();
+}
+
+async function savePurchaseDetails(id,price,date){
+  const card=await dbGet(Number(id));if(!card)return;
+  const n=Number(price);
+  card.purchasePrice=Number.isFinite(n)&&n>=0?n:0;
+  card.cost=card.purchasePrice; // legacy compatibility
+  card.purchaseDate=String(date||'');
+  card.updatedAt=new Date().toISOString();
+  await dbPut(card);
+  if(currentCardId===card.id){
+    $('cost').value=card.purchasePrice||'';
+    if($('purchaseDate'))$('purchaseDate').value=card.purchaseDate||'';
+    renderRawValueHero();
+  }
+  toast('Purchase details saved');
+  await renderCollection();
 }
 
 async function renderCollection(){
@@ -762,27 +868,35 @@ async function renderCollection(){
   $('collectionStats').textContent=`${all.length} card${all.length===1?'':'s'} stored locally`;
   const root=$('collectionList');if(!rows.length){root.innerHTML='<div class="card-block hint">No matching cards.</div>';return}
   root.innerHTML=rows.map(c=>{
-    const med=c.market?.stats?.raw?.median,historyCount=Array.isArray(c.history)?c.history.length:0;
+    const stats=c.market?.stats?.raw,med=stats?.value??stats?.median,historyCount=Array.isArray(c.history)?c.history.length:0;
+    const paid=Number(c.purchasePrice??c.cost)||0,delta=Number.isFinite(Number(med))&&paid>0?Number(med)-paid:null;
+    const paidText=paid>0?`Paid ${formatMoney(paid)}${c.purchaseDate?` on ${esc(c.purchaseDate)}`:''}`:'Price paid not entered';
+    const deltaText=delta==null?'':` · ${delta>=0?'+':''}${formatMoney(delta)} vs paid`;
     return `<div class="collection-card clickable" data-open="${c.id}">
       <img src="${esc(c.front||'')}" alt="">
       <div><div class="collection-title">${esc([c.year,c.subject].filter(Boolean).join(' ')||'Untitled card')}</div>
       <div class="collection-sub">${esc([c.set,c.cardNo?`#${c.cardNo}`:null,c.variation,c.serialNo].filter(Boolean).join(' · '))}</div>
       <div><span class="pill">PSA ${fmtGrade(c.estimate?.psa??'-','PSA')}</span><span class="pill">BGS ${fmtGrade(c.estimate?.bgs??'-','BGS')}</span><span class="pill">CGC ${fmtGrade(c.estimate?.cgc??'-','CGC')}</span><span class="pill">SGC ${fmtGrade(c.estimate?.sgc??'-','SGC')}</span></div>
-      <div class="hint">${med!=null?`Raw median ${formatMoney(med)} · `:''}${historyCount} history · ${c.lastAnalyzedAt?`analyzed ${esc(formatDateTime(c.lastAnalyzedAt))}`:'not analyzed'}</div></div>
+      <div class="hint">${med!=null?`Raw value ${formatMoney(med)} · `:''}${esc(paidText)}${esc(deltaText)} · ${historyCount} history</div></div>
       <div class="collection-actions"><button class="primary compact" data-open-button="${c.id}">Open</button><button class="secondary compact" data-ebay="${c.id}">eBay</button><button class="danger compact" data-del="${c.id}">Delete</button></div>
+      <details class="purchase-editor" data-purchase-details="${c.id}"><summary>Purchase details</summary><div class="purchase-grid">
+        <label>Price paid ($)<input type="number" min="0" step="0.01" value="${paid||''}" data-purchase-price="${c.id}" /></label>
+        <label>Purchase date<input type="date" value="${esc(c.purchaseDate||'')}" data-purchase-date="${c.id}" /></label>
+        <button class="secondary compact" type="button" data-save-purchase="${c.id}">Save purchase</button>
+      </div></details>
     </div>`;
   }).join('');
-  root.querySelectorAll('[data-open]').forEach(el=>el.onclick=e=>{if(e.target.closest('button'))return;openSavedCard(+el.dataset.open)});
+  root.querySelectorAll('[data-open]').forEach(el=>el.onclick=e=>{if(e.target.closest('button,input,details,summary,label'))return;openSavedCard(+el.dataset.open)});
   root.querySelectorAll('[data-open-button]').forEach(b=>b.onclick=e=>{e.stopPropagation();openSavedCard(+b.dataset.openButton)});
   root.querySelectorAll('[data-del]').forEach(b=>b.onclick=async e=>{e.stopPropagation();if(confirm('Delete this card and all of its analysis history from the local collection?')){if(currentCardId===+b.dataset.del)await resetForm();await dbDelete(+b.dataset.del);renderCollection()}});
   root.querySelectorAll('[data-ebay]').forEach(b=>b.onclick=e=>{e.stopPropagation();const c=rows.find(x=>x.id===+b.dataset.ebay),u=c?.market?.searchUrl||`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent([c.year,c.set,c.subject,c.cardNo,c.variation].filter(Boolean).join(' '))}`;window.open(u,'_blank','noopener')});
+  root.querySelectorAll('[data-save-purchase]').forEach(b=>b.onclick=async e=>{e.stopPropagation();const id=+b.dataset.savePurchase;const price=root.querySelector(`[data-purchase-price="${id}"]`)?.value||'';const date=root.querySelector(`[data-purchase-date="${id}"]`)?.value||'';await savePurchaseDetails(id,price,date)});
 }
 
-
 function downloadJson(obj,name){const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
-async function exportBackup(){const data=await dbAll();downloadJson({version:4,type:'collection',exportedAt:new Date().toISOString(),cards:data},`card-lab-collection-${new Date().toISOString().slice(0,10)}.json`)}
-async function exportRecovery(){if(!confirm('Full recovery contains your private Cloudflare API key and draft card photos. Export and store it securely?'))return;const data=await dbAll(),draft=await draftGet();downloadJson({version:4,type:'full-recovery',exportedAt:new Date().toISOString(),cards:data,draft,settings:{backendUrl:localStorage.getItem('cardlab.backendUrl')||'',backendKey:localStorage.getItem('cardlab.backendKey')||''}},`card-lab-full-recovery-${new Date().toISOString().slice(0,10)}.json`);toast('Full recovery exported')}
-async function importBackup(file){try{const j=JSON.parse(await file.text());if(!Array.isArray(j.cards))throw 0;for(const c of j.cards){delete c.id;await dbAdd(c)}if(j.settings){localStorage.setItem('cardlab.backendUrl',j.settings.backendUrl||'');localStorage.setItem('cardlab.backendKey',j.settings.backendKey||'');loadBackendSettings()}if(j.draft){const {key,...draft}=j.draft;await draftPut({...draft,updatedAt:draft.updatedAt||new Date().toISOString()});await restoreDraft()}toast(`Imported ${j.cards.length} cards${j.settings?' + settings':''}`);renderCollection()}catch(e){console.warn(e);toast('Invalid backup file')}}
+async function exportBackup(){const data=await dbAll();downloadJson({version:5,type:'collection',exportedAt:new Date().toISOString(),cards:data},`card-lab-collection-${new Date().toISOString().slice(0,10)}.json`)}
+async function exportRecovery(){if(!confirm('Full recovery contains your private Cloudflare API key and draft card photos. Export and store it securely?'))return;const data=await dbAll(),draft=await draftGet();downloadJson({version:5,type:'full-recovery',exportedAt:new Date().toISOString(),cards:data,draft,settings:{backendUrl:localStorage.getItem('cardlab.backendUrl')||'',backendKey:localStorage.getItem('cardlab.backendKey')||''}},`card-lab-full-recovery-${new Date().toISOString().slice(0,10)}.json`);toast('Full recovery exported')}
+async function importBackup(file){try{const j=JSON.parse(await file.text());if(!Array.isArray(j.cards))throw 0;for(const c of j.cards){delete c.id;if(c.purchasePrice==null&&c.cost!=null)c.purchasePrice=Number(c.cost)||0;if(c.purchaseDate==null)c.purchaseDate='';await dbAdd(c)}if(j.settings){localStorage.setItem('cardlab.backendUrl',j.settings.backendUrl||'');localStorage.setItem('cardlab.backendKey',j.settings.backendKey||'');loadBackendSettings()}if(j.draft){const {key,...draft}=j.draft;await draftPut({...draft,updatedAt:draft.updatedAt||new Date().toISOString()});await restoreDraft()}toast(`Imported ${j.cards.length} cards${j.settings?' + settings':''}`);renderCollection()}catch(e){console.warn(e);toast('Invalid backup file')}}
 
 let updateReloading=false,lastUpdateCheck=0;
 async function registerUpdater(){if(!('serviceWorker' in navigator))return;try{const reg=await navigator.serviceWorker.register(`./sw.js?v=${APP_VERSION}`,{updateViaCache:'none'});navigator.serviceWorker.addEventListener('controllerchange',()=>{if(updateReloading)return;updateReloading=true;location.reload()});const activateWaiting=()=>{if(reg.waiting)reg.waiting.postMessage({type:'SKIP_WAITING'})};reg.addEventListener('updatefound',()=>{const w=reg.installing;if(!w)return;w.addEventListener('statechange',()=>{if(w.state==='installed'&&navigator.serviceWorker.controller)w.postMessage({type:'SKIP_WAITING'})})});await reg.update();activateWaiting()}catch(e){console.warn('Updater registration failed',e)}}
@@ -796,9 +910,13 @@ function bind(){
   $('autoFrontCenterBtn').onclick=()=>measureCentering('front');$('autoBackCenterBtn').onclick=()=>measureCentering('back');
   for(const side of ['front','back'])for(const suffix of ['BorderL','BorderR','BorderT','BorderB'])$(side+suffix).oninput=()=>markCenteringManual(side);
   ['corners','edges','surface','focusScore','crease','dent','stain','scratch','printline','mark','altered','confirmed'].forEach(id=>$(id).onchange=()=>{autoConditionReady=backendConditionReady()||$('confirmed').checked;renderConditionSummary();renderEstimate()});
+  if($('cost')){$('cost').oninput=renderRawValueHero;$('cost').onchange=()=>saveOpenCardBookkeeping()}
+  if($('purchaseDate'))$('purchaseDate').onchange=()=>saveOpenCardBookkeeping();
+  if($('notes'))$('notes').onchange=()=>saveOpenCardBookkeeping();
+  if($('runSelfTestBtn'))$('runSelfTestBtn').onclick=runRegressionSelfTest;
   $('identifyBtn').onclick=()=>identifyFromPhotos(false);if($('reidentifyBtn'))$('reidentifyBtn').onclick=()=>identifyFromPhotos(true);if($('refreshMarketBtn'))$('refreshMarketBtn').onclick=refreshMarketOnly;$('ebayBtn').onclick=ebaySearch;$('saveBackendBtn').onclick=saveBackendSettings;$('testBackendBtn').onclick=testBackend;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;if($('exportRecoveryBtn'))$('exportRecoveryBtn').onclick=exportRecovery;if($('checkUpdateBtn'))$('checkUpdateBtn').onclick=()=>checkForUpdate(true);$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
   if($('marketTabs'))$('marketTabs').querySelectorAll('[data-market-filter]').forEach(b=>b.onclick=()=>{marketFilter=b.dataset.marketFilter||'raw';renderMarket()});
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('installBtn').classList.add('hidden')}else toast('Use your browser Add to Home Screen option')};
 }
 
-(async function init(){await openDB();bind();loadBackendSettings();updateCentering();await restoreDraft();await requestPersistentStorage();await registerUpdater();setTimeout(()=>checkForUpdate(false),1000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkForUpdate(false)});window.addEventListener('pageshow',()=>checkForUpdate(false))})();
+(async function init(){await openDB();bind();loadBackendSettings();updateCentering();renderRawValueHero();renderDiagnostics(null);await restoreDraft();await requestPersistentStorage();await registerUpdater();setTimeout(()=>checkForUpdate(false),1000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkForUpdate(false)});window.addEventListener('pageshow',()=>checkForUpdate(false))})();
