@@ -1,10 +1,10 @@
 'use strict';
 
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.0.1';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 const REF_CACHE_KEY='cardlab.referenceCache.v1', REGRESSION_KEY='cardlab.regressionCases.v1', TELEMETRY_KEY='cardlab.telemetry.v1';
-const FEATURE_FLAGS=Object.freeze({guidedCapture:true,photoQualityGate:true,referenceTemplates:true,stageCaching:true,targetedConsensus:true,adaptiveMarket:true,localFingerprintHints:true,manualCollectionOnly:true});
+const FEATURE_FLAGS=Object.freeze({guidedCapture:false,photoQualityGate:true,referenceTemplates:true,stageCaching:true,targetedConsensus:true,adaptiveMarket:true,localFingerprintHints:true,manualCollectionOnly:true});
 const PERFORMANCE_BUDGET_MS=Object.freeze({analysis:30000,identity:15000,condition:15000,reference:10000,market:8000});
 let cameraStream=null,cameraSide=null,cameraTimer=null,cameraStableCount=0,cameraCaptureBusy=false;
 

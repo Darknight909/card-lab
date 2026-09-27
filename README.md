@@ -1,4 +1,4 @@
-# Card Lab v5.0.0 — GitHub Pages frontend
+# Card Lab v5.0.1 — GitHub Pages frontend
 
 Card Lab 5.0 is a major optimization release focused on accuracy, stage isolation, manual collection control, speed, and regression protection.
 
@@ -39,3 +39,9 @@ Replace the files in the root of the existing `card-lab` GitHub repository and c
 Then open Card Lab → Settings → Check for update.
 
 The header should show `v5.0.0`.
+
+
+## v5.0.1 camera reliability update
+- On iPhone/PWA, the photo buttons use the native system camera instead of an embedded getUserMedia camera.
+- This preserves full native focus/exposure behavior and avoids guided-camera launch/capture failures.
+- Existing post-capture photo-quality checks remain active.

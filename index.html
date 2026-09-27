@@ -9,14 +9,14 @@
   <meta name="apple-mobile-web-app-title" content="Card Lab" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-180.png" />
-  <link rel="stylesheet" href="styles.css?v=5.0.0" />
+  <link rel="stylesheet" href="styles.css?v=5.0.1" />
   <title>Card Grade & Collection Lab</title>
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Verified identity + pre-grading + market · v5.0.0</p>
+      <p>Verified identity + pre-grading + market · v5.0.1</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -41,7 +41,7 @@
           <div class="photo-box">
             <strong>Front</strong>
             <div class="photo-actions">
-              <button id="frontCameraBtn" class="file-button" type="button">Guided camera</button>
+              <button id="frontCameraBtn" class="file-button" type="button">Take photo</button>
               <button id="frontLibraryBtn" class="file-button" type="button">Photo Library</button>
               <input id="frontCameraInput" class="hidden-file" type="file" accept="image/*" capture="environment" />
               <input id="frontLibraryInput" class="hidden-file" type="file" accept="image/*" />
@@ -53,7 +53,7 @@
           <div class="photo-box">
             <strong>Back</strong>
             <div class="photo-actions">
-              <button id="backCameraBtn" class="file-button" type="button">Guided camera</button>
+              <button id="backCameraBtn" class="file-button" type="button">Take photo</button>
               <button id="backLibraryBtn" class="file-button" type="button">Photo Library</button>
               <input id="backCameraInput" class="hidden-file" type="file" accept="image/*" capture="environment" />
               <input id="backLibraryInput" class="hidden-file" type="file" accept="image/*" />
@@ -262,6 +262,6 @@
     </div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=5.0.0" defer></script>
+  <script src="app.js?v=5.0.1" defer></script>
 </body>
 </html>
