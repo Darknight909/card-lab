@@ -1,8 +1,12 @@
 'use strict';
 
-const APP_VERSION = '4.0.0';
+const APP_VERSION = '5.0.0';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
+const REF_CACHE_KEY='cardlab.referenceCache.v1', REGRESSION_KEY='cardlab.regressionCases.v1', TELEMETRY_KEY='cardlab.telemetry.v1';
+const FEATURE_FLAGS=Object.freeze({guidedCapture:true,photoQualityGate:true,referenceTemplates:true,stageCaching:true,targetedConsensus:true,adaptiveMarket:true,localFingerprintHints:true,manualCollectionOnly:true});
+const PERFORMANCE_BUDGET_MS=Object.freeze({analysis:30000,identity:15000,condition:15000,reference:10000,market:8000});
+let cameraStream=null,cameraSide=null,cameraTimer=null,cameraStableCount=0,cameraCaptureBusy=false;
 
 let db;
 let frontData = null, backData = null;
@@ -11,6 +15,7 @@ let backendAnalysis = null, analysisMeta = null, analysisSnapshot = null;
 let ebayData = null, marketData = null, currentCardId = null;
 let identityLocked = false, currentHistory = [], marketFilter = 'raw';
 let currentOpenedAt = null;
+let analysisPhotoKey = null, analysisDirty = false, localTrustedHintUsed = null;
 let analysisInFlight = false;
 let autoIdentityReady = false, autoCenteringReady = false, autoConditionReady = false;
 let centeringMeta = { front: null, back: null };
@@ -22,6 +27,98 @@ function clamp(n,a,b){return Math.max(a,Math.min(b,n))}
 function pctPair(a,b){const total=a+b;if(!total)return [50,50];const p=a/total*100;return [p,100-p]}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+
+function localJsonGet(key,fallback=[]){try{const v=JSON.parse(localStorage.getItem(key)||'null');return v??fallback}catch{return fallback}}
+function localJsonSet(key,value){try{localStorage.setItem(key,JSON.stringify(value))}catch(e){console.warn('Local intelligence save failed',e)}}
+function currentIdentityFields(){return {year:Number($('year')?.value)||null,set:String($('set')?.value||'').trim()||null,subject:String($('subject')?.value||'').trim()||null,cardNo:String($('cardNo')?.value||'').trim().replace(/^#/,'')||null,variation:String($('variation')?.value||'').trim()||null,serialNo:String($('serialNo')?.value||'').trim()||null,category:$('category')?.value||'Other'}}
+
+function referenceCache(){
+  const rows=localJsonGet(REF_CACHE_KEY,[]);
+  return Array.isArray(rows)?rows:[];
+}
+function regressionCases(){
+  const rows=localJsonGet(REGRESSION_KEY,[]);
+  return Array.isArray(rows)?rows:[];
+}
+function telemetryRows(){
+  const rows=localJsonGet(TELEMETRY_KEY,[]);
+  return Array.isArray(rows)?rows:[];
+}
+function localTrustedHint(){
+  localTrustedHintUsed=null;
+  if(!frontData?.fingerprint)return null;
+  let best=null;
+  for(const r of referenceCache()){
+    if(!r?.frontFingerprint||!r?.identity?.cardNo)continue;
+    const distance=hammingHex(frontData.fingerprint,r.frontFingerprint);
+    if(distance>7)continue;
+    if(!best||distance<best.distance)best={...r,distance};
+  }
+  if(!best)return null;
+  localTrustedHintUsed={cardNo:best.identity.cardNo,distance:best.distance,source:best.source||'local verified-card cache'};
+  return {...best.identity,source:best.source||'local verified-card cache'};
+}
+function rememberVerifiedReference(){
+  const a=backendAnalysis||{},i=a.identity||{};
+  if(!['verified','locked'].includes(a.verification_status)||!i.cardNo||!frontData?.fingerprint)return;
+  const rows=referenceCache().filter(r=>!(r.frontFingerprint===frontData.fingerprint&&r.identity?.cardNo===i.cardNo));
+  rows.unshift({
+    frontFingerprint:frontData.fingerprint,backFingerprint:backData?.fingerprint||null,
+    identity:cloneData(i),sources:cloneData(a.sources||[]),referenceImages:cloneData(a.reference_images||[]),
+    source:'verified online identity',verifiedAt:new Date().toISOString()
+  });
+  localJsonSet(REF_CACHE_KEY,rows.slice(0,250));
+}
+function identityDiffFromBackend(){
+  const base=backendAnalysis?.identity||{},cur=currentIdentityFields(),diff={};
+  for(const k of ['year','set','subject','cardNo','variation']){
+    const a=String(base?.[k]??'').trim().toLowerCase(),b=String(cur?.[k]??'').trim().toLowerCase();
+    if(a!==b)diff[k]={from:base?.[k]??null,to:cur?.[k]??null};
+  }
+  const backendSerial=String(backendAnalysis?.serial_number||'').trim().toLowerCase();
+  if(backendSerial!==String(cur.serialNo||'').trim().toLowerCase())diff.serialNo={from:backendAnalysis?.serial_number||null,to:cur.serialNo||null};
+  return diff;
+}
+function captureCorrectionCase(diff){
+  if(!diff||!Object.keys(diff).length)return;
+  const rows=regressionCases();
+  rows.unshift({
+    capturedAt:new Date().toISOString(),photoKey:photoKey(),
+    frontFingerprint:frontData?.fingerprint||null,backFingerprint:backData?.fingerprint||null,
+    analyzedIdentity:cloneData(backendAnalysis?.identity||null),
+    correctedIdentity:cloneData(currentIdentityFields()),differences:cloneData(diff),
+    apiVersion:analysisSnapshot?.version||analysisMeta?.version||null
+  });
+  localJsonSet(REGRESSION_KEY,rows.slice(0,100));
+  if(frontData?.fingerprint&&currentIdentityFields().cardNo){
+    const refs=referenceCache();
+    refs.unshift({frontFingerprint:frontData.fingerprint,backFingerprint:backData?.fingerprint||null,identity:cloneData(currentIdentityFields()),sources:[],referenceImages:[],source:'user-confirmed correction',verifiedAt:new Date().toISOString()});
+    localJsonSet(REF_CACHE_KEY,refs.slice(0,250));
+  }
+}
+function recordTelemetry(result,kind='analysis'){
+  const t=result?.diagnostics?.timingsMs||{};
+  const rows=telemetryRows();
+  rows.unshift({at:new Date().toISOString(),kind,apiVersion:result?.version||null,total:Number(t.total??t.condition??t.market)||0,identity:Number(t.identity)||0,condition:Number(t.condition)||0,market:Number(t.market)||0,reference:Number(t.reference)||0,reused:cloneData(result?.diagnostics?.stagesReused||null)});
+  localJsonSet(TELEMETRY_KEY,rows.slice(0,50));
+}
+function telemetrySummary(){
+  const rows=telemetryRows().filter(x=>Number(x.total)>0).slice(0,20);
+  if(!rows.length)return null;
+  const avg=k=>Math.round(rows.reduce((a,b)=>a+(Number(b[k])||0),0)/rows.length);
+  return {samples:rows.length,averageMs:{total:avg('total'),identity:avg('identity'),condition:avg('condition'),market:avg('market'),reference:avg('reference')}};
+}
+function calibrationSummary(){
+  const rows=regressionCases();
+  const fields={year:0,set:0,subject:0,cardNo:0,variation:0,serialNo:0};
+  for(const r of rows)for(const k of Object.keys(r?.differences||{}))if(k in fields)fields[k]++;
+  return {confirmedCorrectionCases:rows.length,fieldCorrections:fields,note:rows.length<10?'Calibration is collecting confirmed corrections; larger samples will make confidence tuning more meaningful.':'Use these observed correction frequencies to tune field-confidence thresholds in future releases.'};
+}
+function performanceSummary(){
+  const t=telemetrySummary();if(!t)return null;
+  const a=t.averageMs||{};
+  return {...t,budgetsMs:PERFORMANCE_BUDGET_MS,overBudget:{analysis:Number(a.total||0)>PERFORMANCE_BUDGET_MS.analysis,identity:Number(a.identity||0)>PERFORMANCE_BUDGET_MS.identity,condition:Number(a.condition||0)>PERFORMANCE_BUDGET_MS.condition,reference:Number(a.reference||0)>PERFORMANCE_BUDGET_MS.reference,market:Number(a.market||0)>PERFORMANCE_BUDGET_MS.market}};
+}
 
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB,3);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(STORE)){const s=d.createObjectStore(STORE,{keyPath:'id',autoIncrement:true});s.createIndex('subject','subject')}if(!d.objectStoreNames.contains(DRAFT))d.createObjectStore(DRAFT,{keyPath:'key'})};r.onsuccess=()=>{db=r.result;res(db)};r.onerror=()=>rej(r.error)})}
 function tx(mode='readonly'){return db.transaction(STORE,mode).objectStore(STORE)}
@@ -43,7 +140,7 @@ function savedIdentityTrusted(card){
   const status=backend.verification_status;
   const ver=String(card?.identification?.meta?.version||card?.analysisSnapshot?.version||'');
   if(!['verified','locked'].includes(status))return false;
-  if(ver.startsWith('4.'))return backend.variant_status!=='unresolved';
+  if(ver.startsWith('5.')||ver.startsWith('4.'))return backend.variant_status!=='unresolved';
   if(ver.startsWith('3.')){
     // v3 predates the strict parallel/serial evidence gate. Force one re-identification
     // for saved cards that already carry a variation so an old parallel guess cannot stay locked.
@@ -56,7 +153,7 @@ function savedIdentityTrusted(card){
 async function persistDraft(){
   try{
     await draftPut({
-      frontData,backData,analysisSnapshot,currentCardId,identityLocked,centeringMeta,
+      frontData,backData,analysisSnapshot,currentCardId,identityLocked,centeringMeta,analysisPhotoKey,analysisDirty,
       centeringValues:{front:centeringSide('front'),back:centeringSide('back')},
       updatedAt:new Date().toISOString()
     });
@@ -69,7 +166,7 @@ async function restoreDraft(){
     if(d.frontData?.dataUrl){frontData=d.frontData;showStoredPhoto('front',frontData)}
     if(d.backData?.dataUrl){backData=d.backData;showStoredPhoto('back',backData)}
     currentCardId=d.currentCardId!=null&&Number.isFinite(Number(d.currentCardId))?Number(d.currentCardId):null;
-    identityLocked=false;
+    identityLocked=false;analysisPhotoKey=d.analysisPhotoKey||null;analysisDirty=Boolean(d.analysisDirty);
     if(currentCardId){
       const saved=await dbGet(currentCardId);
       currentHistory=Array.isArray(saved?.history)?saved.history:[];
@@ -92,7 +189,7 @@ async function restoreDraft(){
     if(frontData&&!centeringMeta.front?.manual)await measureCentering('front',true);
     if(backData&&!centeringMeta.back?.manual)await measureCentering('back',true);
     updateCentering();
-    if(d.analysisSnapshot?.version && (String(d.analysisSnapshot.version).startsWith('3.')||String(d.analysisSnapshot.version).startsWith('4.'))){
+    if(d.analysisSnapshot?.version && ['3.','4.','5.'].some(v=>String(d.analysisSnapshot.version).startsWith(v))){
       analysisSnapshot=d.analysisSnapshot;
       await applyBackendAnalysis(d.analysisSnapshot,{skipSave:true,restoring:true});
       setIdentifyStatus(identityLocked?'Saved card restored · identity locked · Re-analyze refreshes grade and eBay without re-identifying.':'Previous Card Lab analysis restored locally · tap Re-analyze card to refresh.');
@@ -169,35 +266,74 @@ function photoGate(){
   return {pass:problems.length===0,problems};
 }
 
+async function acceptPreparedPhoto(o,side){
+  const preview=side==='front'?'frontPreview':'backPreview',quality=side==='front'?'frontQuality':'backQuality';
+  try{o.bounds=o.bounds||await detectCardBounds(o.dataUrl)}catch{}
+  $(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);
+  if(side==='front'){frontData=o;if($('frontSavedStatus'))$('frontSavedStatus').textContent='Photo saved locally'}else{backData=o;if($('backSavedStatus'))$('backSavedStatus').textContent='Photo saved locally'}
+  let sameSavedDesign=false;
+  if(currentCardId&&identityLocked){
+    const saved=await dbGet(currentCardId);const expected=side==='front'?saved?.frontFingerprint:saved?.backFingerprint;
+    sameSavedDesign=Boolean(expected&&o.fingerprint&&hammingHex(expected,o.fingerprint)<=10);
+  }
+  if(currentCardId&&identityLocked&&sameSavedDesign){
+    analysisSnapshot=null;analysisPhotoKey=null;analysisDirty=true;lastEstimate=null;autoConditionReady=false;marketData=null;ebayData=null;
+  }else{
+    if(currentCardId&&identityLocked&&!sameSavedDesign){currentCardId=null;currentOpenedAt=null;currentHistory=[]}
+    analysisSnapshot=null;analysisPhotoKey=null;analysisDirty=false;backendAnalysis=null;analysisMeta=null;ebayData=null;marketData=null;lastEstimate=null;autoConditionReady=false;autoIdentityReady=false;identityLocked=false;
+  }
+  centeringMeta[side]=null;$('identifyResults').classList.add('hidden');await measureCentering(side,true);await persistDraft();
+  renderConditionSummary();renderEstimate();renderHistory();updateCollectionAction();renderRawValueHero();renderQuickSummary();
+  toast(`${side} photo ready · saved locally`);
+  if(frontData&&backData&&!analysisInFlight){const gate=photoGate();if(gate.pass)setTimeout(()=>identifyFromPhotos(false),350);else setIdentifyStatus(`<span class="warn">Photo-quality check stopped automatic analysis: ${esc(gate.problems.join('; '))}. Retake the affected photo.</span>`)}
+  else setIdentifyStatus('Photo saved locally · add the other side to start automatic analysis.');
+}
+async function processPhotoFile(file,side){
+  if(!file)return;
+  try{setIdentifyStatus(`<span class="spinner"></span>Preparing ${side} photo…`);const o=await compressImage(file);await acceptPreparedPhoto(o,side)}
+  catch(e){console.error(e);setIdentifyStatus(`Photo processing failed: ${esc(e.message||String(e))}`);toast('Could not process photo')}
+}
 async function handlePhoto(input,preview,quality,side){
-  const f=input.files?.[0];if(!f)return;
+  const f=input.files?.[0];if(!f)return;try{await processPhotoFile(f,side)}finally{input.value=''}
+}
+function stopGuidedCamera(){
+  if(cameraTimer){clearInterval(cameraTimer);cameraTimer=null}cameraStableCount=0;cameraCaptureBusy=false;
+  if(cameraStream){for(const t of cameraStream.getTracks())t.stop();cameraStream=null}
+  const m=$('cameraAssist');if(m)m.classList.add('hidden');const v=$('guideVideo');if(v)v.srcObject=null;cameraSide=null;
+}
+function guidedCropRect(w,h){
+  let ch=h*.82,cw=ch*(2.5/3.5);if(cw>w*.82){cw=w*.82;ch=cw*(3.5/2.5)}
+  return {x:(w-cw)/2,y:(h-ch)/2,w:cw,h:ch};
+}
+function guideFrameEdgeScore(canvas){
+  const W=canvas.width,H=canvas.height,ctx=canvas.getContext('2d',{willReadFrequently:true}),d=ctx.getImageData(0,0,W,H).data,g=new Float32Array(W*H);
+  for(let i=0,j=0;i<d.length;i+=4,j++)g[j]=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+  const r=guidedCropRect(W,H),x0=Math.max(3,Math.round(r.x)),x1=Math.min(W-4,Math.round(r.x+r.w)),y0=Math.max(3,Math.round(r.y)),y1=Math.min(H-4,Math.round(r.y+r.h));let sum=0,n=0;
+  for(let y=y0;y<=y1;y+=4){sum+=Math.abs(g[y*W+x0+2]-g[y*W+x0-2])+Math.abs(g[y*W+x1+2]-g[y*W+x1-2]);n+=2}
+  for(let x=x0;x<=x1;x+=4){sum+=Math.abs(g[(y0+2)*W+x]-g[(y0-2)*W+x])+Math.abs(g[(y1+2)*W+x]-g[(y1-2)*W+x]);n+=2}
+  return n?sum/n:0;
+}
+function guidedCameraCheck(){
+  const v=$('guideVideo'),status=$('guideStatus');if(!v||!v.videoWidth||cameraCaptureBusy)return;
+  const W=320,H=Math.max(1,Math.round(v.videoHeight*W/v.videoWidth)),c=document.createElement('canvas');c.width=W;c.height=H;c.getContext('2d').drawImage(v,0,0,W,H);
+  const q=analyzeQuality(c),edge=guideFrameEdgeScore(c),good=q.score>=78&&q.glare<=5&&q.sharp>=15&&edge>=7;
+  cameraStableCount=good?cameraStableCount+1:Math.max(0,cameraStableCount-1);
+  if(status)status.innerHTML=good?`<span class="good">Good framing · hold steady ${Math.min(cameraStableCount,5)}/5</span>`:`Align card inside frame · quality ${q.score}/100 · edge ${edge.toFixed(1)}`;
+  if(good&&cameraStableCount>=5&&$('guideAuto')?.checked)captureGuidedPhoto();
+}
+async function captureGuidedPhoto(){
+  const v=$('guideVideo');if(!v?.videoWidth||cameraCaptureBusy||!cameraSide)return;cameraCaptureBusy=true;
   try{
-    setIdentifyStatus(`<span class="spinner"></span>Preparing ${side} photo…`);
-    const o=await compressImage(f);
-    try{o.bounds=await detectCardBounds(o.dataUrl)}catch{}
-    $(preview).src=o.dataUrl;$(preview).style.display='block';$(quality).innerHTML=qualityText(o.quality);
-    if(side==='front'){frontData=o;if($('frontSavedStatus'))$('frontSavedStatus').textContent='Photo saved locally'}else{backData=o;if($('backSavedStatus'))$('backSavedStatus').textContent='Photo saved locally'}
-    if(currentCardId&&identityLocked){
-      analysisSnapshot=null;lastEstimate=null;autoConditionReady=false;
-      // Keep the already verified identity/sources while a saved card gets new photos.
-      marketData=null;ebayData=null;
-    }else{
-      analysisSnapshot=null;backendAnalysis=null;analysisMeta=null;ebayData=null;marketData=null;lastEstimate=null;autoConditionReady=false;
-      autoIdentityReady=false;identityLocked=false;currentHistory=[];
-    }
-    centeringMeta[side]=null;
-    $('identifyResults').classList.add('hidden');
-    await measureCentering(side,true);
-    await persistDraft();
-    renderConditionSummary();renderEstimate();renderHistory();
-    toast(`${side} photo ready · saved locally`);
-    if(frontData&&backData&&!analysisInFlight){
-      const gate=photoGate();
-      if(gate.pass)setTimeout(()=>identifyFromPhotos(false),350);
-      else setIdentifyStatus(`<span class="warn">Photo-quality check stopped automatic analysis: ${esc(gate.problems.join('; '))}. Retake the affected photo.</span>`);
-    }else setIdentifyStatus('Photo saved locally · add the other side to start automatic analysis.');
-  }catch(e){console.error(e);setIdentifyStatus(`Photo processing failed: ${esc(e.message||String(e))}`);toast('Could not process photo')}
-  finally{input.value=''}
+    const r=guidedCropRect(v.videoWidth,v.videoHeight),c=document.createElement('canvas');c.width=Math.max(900,Math.round(r.w));c.height=Math.round(c.width*(r.h/r.w));c.getContext('2d').drawImage(v,r.x,r.y,r.w,r.h,0,0,c.width,c.height);
+    const blob=await new Promise(resolve=>c.toBlob(resolve,'image/jpeg',.93));if(!blob)throw new Error('Camera capture failed');const side=cameraSide;stopGuidedCamera();await processPhotoFile(new File([blob],`${side}-card.jpg`,{type:'image/jpeg'}),side);
+  }catch(e){cameraCaptureBusy=false;toast(e.message||'Camera capture failed')}
+}
+async function openGuidedCamera(side){
+  if(!FEATURE_FLAGS.guidedCapture||!navigator.mediaDevices?.getUserMedia){$(side+'CameraInput').click();return}
+  try{
+    stopGuidedCamera();cameraSide=side;cameraStableCount=0;cameraCaptureBusy=false;$('cameraAssist').classList.remove('hidden');$('guideTitle').textContent=`Guided ${side} photo`;$('guideStatus').textContent='Starting camera…';
+    cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:2560}},audio:false});const v=$('guideVideo');v.srcObject=cameraStream;await v.play();$('guideStatus').textContent='Align the entire card inside the frame and hold steady.';cameraTimer=setInterval(guidedCameraCheck,260);
+  }catch(e){console.warn('Guided camera unavailable',e);stopGuidedCamera();toast('Guided camera unavailable · opening standard camera');$(side+'CameraInput').click()}
 }
 
 function setIdentifyStatus(html){$('identifyStatus').innerHTML=html}
@@ -263,7 +399,7 @@ function renderRawValueHero(){
   const s=marketRawStats();
   if(!s||!Number.isFinite(Number(s.value??s.median))){
     el.innerHTML='<div><small>Raw card value</small><strong>Not available yet</strong></div><span class="hint value-meta">Verified raw-market matches will establish the value.</span>';
-    return;
+    renderQuickSummary();return;
   }
   const value=Number(s.value??s.median),paid=currentPricePaid(),delta=paid!=null?value-paid:null;
   const rangeLow=Number.isFinite(Number(s.trimmedLow))?Number(s.trimmedLow):Number(s.low);
@@ -271,6 +407,7 @@ function renderRawValueHero(){
   const quality=Number(s.quality||0);
   const deltaText=delta==null?'':`${delta>=0?'+':''}${formatMoney(delta)} vs. price paid`;
   el.innerHTML=`<div><small>Raw card value</small><strong>${formatMoney(value)}</strong></div><div class="hint value-meta">${quality?`${esc(valueQualityLabel(quality))} support · `:''}${s.sampleSize||0} match${Number(s.sampleSize)===1?'':'es'}${Number.isFinite(rangeLow)&&Number.isFinite(rangeHigh)?` · ${formatMoney(rangeLow)}–${formatMoney(rangeHigh)}`:''}${deltaText?`<br><b>${esc(deltaText)}</b>`:''}${s.includesShipping?' · incl. listed shipping':''}</div>`;
+  renderQuickSummary();
 }
 function renderDiagnostics(result=analysisSnapshot){
   const el=$('diagnosticOutput');if(!el)return;
@@ -287,6 +424,12 @@ function renderDiagnostics(result=analysisSnapshot){
     fieldConfidence:a.field_confidence||null,
     evidenceGraph:a.evidence_graph||null,
     pipeline:result?.pipeline||analysisMeta?.pipeline||null,
+    localTrustedHint:localTrustedHintUsed,
+    localReferenceCacheSize:referenceCache().length,
+    capturedRegressionCases:regressionCases().length,
+    performance:performanceSummary(),
+    calibration:calibrationSummary(),
+    featureFlags:FEATURE_FLAGS,
   };
   el.textContent=JSON.stringify(view,null,2);
 }
@@ -327,7 +470,7 @@ function renderMarket(market=marketData,ebay=ebayData){
   const live=Boolean(marketData?.live);
   const source=marketData?.source||'';
   const stats=marketFilter==='graded'?marketData?.stats?.graded:marketFilter==='all'?null:marketData?.stats?.raw;
-  const status=`<div class="market-status ${live?'good':'warn'}"><strong>${live?'Live eBay Browse API':'Fallback market results'}</strong>${source?` · ${esc(source)}`:''}${marketData?.refreshedAt?` · refreshed ${esc(formatDateTime(marketData.refreshedAt))}`:''}</div>`;
+  const env=marketData?.environment||ebay?.environment||'';const status=`<div class="market-status ${live?'good':'warn'}"><strong>${live?'Live eBay Browse API':'Fallback market results'}</strong>${env?` · ${esc(String(env).toUpperCase())}`:''}${source?` · ${esc(source)}`:''}${marketData?.refreshedAt?` · refreshed ${esc(formatDateTime(marketData.refreshedAt))}`:''}</div>`;
   const tabs=$('marketTabs');if(tabs)tabs.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.marketFilter===marketFilter));
   const statsHtml=stats?`<div class="market-stats"><span>Matches <b>${stats.sampleSize}</b></span><span>Value <b>${formatMoney(stats.value??stats.median)}</b></span><span>Credible low <b>${formatMoney(stats.trimmedLow??stats.low)}</b></span><span>Credible high <b>${formatMoney(stats.trimmedHigh??stats.high)}</b></span></div><div class="hint">Market support: ${esc(valueQualityLabel(stats.quality))}${stats.includesShipping?' · listing price + stated shipping':''}</div>`:'';
   if(!items.length){
@@ -349,6 +492,22 @@ function renderMarket(market=marketData,ebay=ebayData){
   root.classList.remove('empty');root.innerHTML=`${status}${statsHtml}<div class="market-list">${cards}</div>${marketData?.note?`<div class="hint">${esc(marketData.note)}</div>`:''}${searchUrl?`<div class="hint"><a href="${esc(searchUrl)}" target="_blank" rel="noopener">Open full eBay search</a></div>`:''}`;
 }
 
+
+function renderQuickSummary(){
+  const el=$('quickSummary');if(!el)return;
+  const i=backendAnalysis?.identity||{},status=backendAnalysis?.verification_status||'unverified';
+  const title=[i.year,i.subject,i.cardNo?`#${i.cardNo}`:null,i.variation].filter(Boolean).join(' · ')||'Card not identified yet';
+  const raw=marketRawStats(),value=raw?.value??raw?.median;
+  const grade=lastEstimate?`PSA ${fmtGrade(lastEstimate.psa,'PSA')} · BGS ${fmtGrade(lastEstimate.bgs,'BGS')}`:'Grade withheld';
+  const statusText=status==='verified'||status==='locked'?'Verified identity':status==='probable'?'Probable identity':'Identity needs review';
+  el.innerHTML=`<div><strong>${esc(title)}</strong><div class="hint">${esc(statusText)} · ${esc(grade)}</div></div><div class="quick-value"><small>Raw value</small><b>${Number.isFinite(Number(value))?formatMoney(value):'—'}</b></div>`;
+}
+function updateCollectionAction(){
+  const b=$('addCollectionBtn');if(!b)return;
+  b.disabled=!analysisSnapshot;
+  b.textContent=currentCardId?'Update Collection':'Add to Collection';
+  b.classList.toggle('hidden',!analysisSnapshot);
+}
 function backendConditionReady(){const c=backendAnalysis?.condition||{};return [c.corners,c.edges,c.surface,c.focus].every(v=>Number.isFinite(Number(v))&&Number(v)>=1&&Number(v)<=10)&&Number(backendAnalysis?.condition_confidence||0)>=45}
 function renderConditionSummary(){
   const c=backendAnalysis?.condition||{},d=c.defects||{};const flags=Object.entries(d).filter(([,v])=>v).map(([k])=>k.replaceAll('_',' '));const el=$('conditionAutoSummary');if(!el)return;
@@ -411,15 +570,15 @@ async function applyBackendAnalysis(result,{skipSave=false,restoring=false,reide
   if(autoConditionReady){nearestOption('corners',c.corners);nearestOption('edges',c.edges);nearestOption('surface',c.surface);nearestOption('focusScore',c.focus)}
   $('crease').checked=!!d.crease;$('dent').checked=!!d.dent;$('stain').checked=!!d.stain;$('scratch').checked=!!d.scratch;$('printline').checked=!!d.printline;$('mark').checked=!!d.mark;$('altered').checked=!!d.possible_alteration;$('confirmed').checked=false;
   await ensureLocalCentering();reconcileCenteringWithVision();renderConditionSummary();renderEstimate();renderBackendSummary(a,result.ebay);renderMarket(result.market,result.ebay);renderDiagnostics(result);
-  if(!restoring)analysisSnapshot=result;
-  if(autoIdentityReady&&!skipSave){
-    await saveCardAutomatic({appendHistory:true,reidentify});
-  }else if(autoIdentityReady&&restoring){
-    if($('saveStatus'))$('saveStatus').textContent=currentCardId?`Saved locally · card #${currentCardId} · identity locked`:'Analysis restored locally';
-  }else if($('saveStatus')){
-    $('saveStatus').textContent='Not saved automatically: exact identity has not passed the trusted-source verification gate.';
+  if(!restoring){
+    analysisSnapshot=result;analysisPhotoKey=photoKey();analysisDirty=true;
+    rememberVerifiedReference();
   }
-  renderHistory();
+  if($('saveStatus')){
+    if(currentCardId)$('saveStatus').textContent=analysisDirty?`Analysis updated · card #${currentCardId} is unchanged until you tap Update Collection.`:`Saved locally · card #${currentCardId}`;
+    else $('saveStatus').textContent='Not in Collection. Analysis stays temporary until you tap Add to Collection.';
+  }
+  updateCollectionAction();renderQuickSummary();renderHistory();
   await persistDraft();
 }
 
@@ -565,6 +724,23 @@ async function prepareAnalysisImage(side){
   if(!data.bounds)data.bounds=await detectCardBounds(data.dataUrl);
   return cropForAnalysis(data.dataUrl,data.bounds,1900,.91);
 }
+
+async function normalizeIdentityImage(dataUrl){
+  const img=await loadImage(dataUrl),W=img.naturalWidth||img.width,H=img.naturalHeight||img.height;
+  const c=document.createElement('canvas');c.width=W;c.height=H;
+  const x=c.getContext('2d');x.filter='contrast(1.08) brightness(1.02) saturate(.96)';x.drawImage(img,0,0,W,H);x.filter='none';
+  return c.toDataURL('image/jpeg',.92);
+}
+async function prepareIdentityImage(side){
+  const base=await prepareAnalysisImage(side);if(!base)return null;
+  try{return await normalizeIdentityImage(base)}catch{return base}
+}
+function currentCenteringPayload(){
+  return {
+    front:{...(centeringMeta.front||{}),values:centeringSide('front')},
+    back:{...(centeringMeta.back||{}),values:centeringSide('back')}
+  };
+}
 async function analyzeRequest(url,key,payload){
   let lastErr=null;for(let attempt=1;attempt<=3;attempt++){
     try{
@@ -578,7 +754,7 @@ async function analyzeRequest(url,key,payload){
   throw lastErr||new Error('Analysis request failed');
 }
 function lockedIdentityPayload(){
-  if(!identityLocked||!currentCardId)return null;
+  if(!identityLocked)return null;
   const i=backendAnalysis?.identity||{};
   const year=Number(i.year),set=String(i.set||'').trim(),subject=String(i.subject||'').trim(),cardNo=String(i.cardNo||'').trim();
   if(!Number.isFinite(year)||!set||!subject||!cardNo)return null;
@@ -591,11 +767,20 @@ async function identifyFromPhotos(reidentify=false){
   try{
     analysisInFlight=true;$('identifyBtn').disabled=true;if($('reidentifyBtn'))$('reidentifyBtn').disabled=true;
     setIdentifyStatus('<span class="spinner"></span>Measuring centering locally…');await ensureLocalCentering();
-    setIdentifyStatus('<span class="spinner"></span>Preparing analysis copies…');
-    const [frontForAnalysis,backForAnalysis]=await Promise.all([prepareAnalysisImage('front'),prepareAnalysisImage('back')]);
+    setIdentifyStatus('<span class="spinner"></span>Preparing normalized identity copies and original condition copies…');
+    const [frontForAnalysis,backForAnalysis,frontIdentity,backIdentity]=await Promise.all([prepareAnalysisImage('front'),prepareAnalysisImage('back'),prepareIdentityImage('front'),prepareIdentityImage('back')]);
     const lock=!reidentify?lockedIdentityPayload():null;
     setIdentifyStatus(lock?'<span class="spinner"></span>Identity locked · refreshing condition, grades, and eBay listings…':'<span class="spinner"></span>Reading card → verifying exact identity from trusted online sources → condition → eBay…');
-    const payload={front:frontForAnalysis,back:backForAnalysis,photoQuality:{front:frontData?.quality||null,back:backData?.quality||null}};
+    const payload={
+      front:frontForAnalysis,back:backForAnalysis,frontIdentity,backIdentity,
+      photoQuality:{front:frontData?.quality||null,back:backData?.quality||null},
+      localCentering:currentCenteringPayload()
+    };
+    const hint=localTrustedHint();if(hint&&!lock)payload.trustedHint=hint;
+    if(reidentify && analysisPhotoKey===photoKey() && backendConditionReady()){
+      payload.conditionLock=cloneData(backendAnalysis.condition);
+      payload.conditionConfidence=Number(backendAnalysis?.condition_confidence||0);
+    }
     if(lock){
       payload.identityLock=lock;
       payload.identityConfidence=backendAnalysis?.identity_confidence||98;
@@ -605,12 +790,44 @@ async function identifyFromPhotos(reidentify=false){
     }
     const j=await analyzeRequest(url,key,payload);
     await applyBackendAnalysis(j,{reidentify});
+    recordTelemetry(j,'analysis');
     const status=j.analysis?.verification_status;
-    setIdentifyStatus(status==='verified'||status==='locked'?'Analysis complete · exact identity trusted, pre-grade refreshed, and market refreshed.':'Analysis complete · identity did not pass the trusted-source verification gate.');
-    toast(autoIdentityReady?(lastEstimate?'Card re-analyzed and saved':'Card verified; grade withheld where evidence is insufficient'):'Identity needs review');
+    setIdentifyStatus(status==='verified'||status==='locked'?'Analysis complete · exact identity trusted. Review results, then add/update Collection only if you choose.':'Analysis complete · review the unresolved fields. You may still add the card to Collection manually.');
+    toast(autoIdentityReady?(lastEstimate?'Analysis complete':'Card verified; grade withheld where evidence is insufficient'):'Analysis complete · identity needs review');
   }catch(e){console.error(e);setIdentifyStatus(`Analysis failed: ${esc(e.message||String(e))}`);toast('Automatic analysis failed')}
   finally{analysisInFlight=false;$('identifyBtn').disabled=false;if($('reidentifyBtn'))$('reidentifyBtn').disabled=false}
 }
+
+async function retryConditionOnly(){
+  if(!frontData||!backData){toast('Take both front and back photos first');return}
+  const {url,key}=backendConfig();if(!url||!key){toast('Backend is not configured');return}
+  try{
+    if($('retryConditionBtn'))$('retryConditionBtn').disabled=true;
+    setIdentifyStatus('<span class="spinner"></span>Retrying condition only · identity and eBay are not being rerun…');
+    const [front,back]=await Promise.all([prepareAnalysisImage('front'),prepareAnalysisImage('back')]);
+    const r=await fetch(`${url}/condition`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({
+      front,back,
+      photoQuality:{front:frontData?.quality||null,back:backData?.quality||null},
+      referenceImages:backendAnalysis?.reference_images||analysisSnapshot?.analysis?.reference_images||[],
+      identity:backendAnalysis?.identity||null
+    }),cache:'no-store'});
+    const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||`HTTP ${r.status}`);
+    backendAnalysis={...(backendAnalysis||{}),condition:j.analysis?.condition||null,condition_confidence:Number(j.analysis?.condition_confidence||0),reference_template:j.analysis?.reference_template||backendAnalysis?.reference_template||null};
+    if(analysisSnapshot){
+      analysisSnapshot.analysis={...(analysisSnapshot.analysis||{}),condition:cloneData(backendAnalysis.condition),condition_confidence:backendAnalysis.condition_confidence,reference_template:cloneData(backendAnalysis.reference_template)};
+      analysisSnapshot.diagnostics={...(analysisSnapshot.diagnostics||{}),conditionRetry:j.diagnostics||null};
+    }
+    autoConditionReady=backendConditionReady();
+    const c=backendAnalysis.condition||{},d=c.defects||{};
+    if(autoConditionReady){nearestOption('corners',c.corners);nearestOption('edges',c.edges);nearestOption('surface',c.surface);nearestOption('focusScore',c.focus)}
+    $('crease').checked=!!d.crease;$('dent').checked=!!d.dent;$('stain').checked=!!d.stain;$('scratch').checked=!!d.scratch;$('printline').checked=!!d.printline;$('mark').checked=!!d.mark;$('altered').checked=!!d.possible_alteration;
+    reconcileCenteringWithVision();renderConditionSummary();renderEstimate();renderBackendSummary(backendAnalysis,ebayData);renderDiagnostics(analysisSnapshot);renderQuickSummary();
+    analysisDirty=true;analysisPhotoKey=photoKey();recordTelemetry({version:j.version,diagnostics:j.diagnostics},'condition-only');updateCollectionAction();
+    await persistDraft();toast(autoConditionReady?'Condition refreshed':'Condition still uncertain · Card Lab withheld unsupported scores');
+  }catch(e){console.error(e);toast(`Condition retry failed: ${e.message||e}`)}
+  finally{if($('retryConditionBtn'))$('retryConditionBtn').disabled=false}
+}
+
 async function refreshMarketOnly(){
   if(!autoIdentityReady){toast('Verify the card identity first');return}
   const {url,key}=backendConfig();if(!url||!key){toast('Backend is not configured');return}
@@ -624,7 +841,7 @@ async function refreshMarketOnly(){
     const front=frontData?await prepareAnalysisImage('front'):null;
     const r=await fetch(`${url}/market`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({identity,front}),cache:'no-store'});
     const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||`HTTP ${r.status}`);
-    marketData=j.market||null;ebayData=j.ebay||null;renderMarket();if(j.diagnostics&&analysisSnapshot){analysisSnapshot.diagnostics={...(analysisSnapshot.diagnostics||{}),marketRefresh:j.diagnostics};renderDiagnostics(analysisSnapshot)}
+    marketData=j.market||null;ebayData=j.ebay||null;renderMarket();recordTelemetry({version:j.version,diagnostics:j.diagnostics},'market-only');if(j.diagnostics&&analysisSnapshot){analysisSnapshot.diagnostics={...(analysisSnapshot.diagnostics||{}),marketRefresh:j.diagnostics};renderDiagnostics(analysisSnapshot)}
     if(currentCardId){
       const card=await dbGet(currentCardId);if(card){card.market=marketData;card.marketRefreshedAt=marketData?.refreshedAt||new Date().toISOString();card.updatedAt=new Date().toISOString();await dbPut(card)}
     }
@@ -652,8 +869,8 @@ function companyGrades(){
 }
 function fmtGrade(g,company){if(g===0)return 'NG?';if(company==='SGC'&&g===10)return '10';return String(g)}
 function renderEstimate(){
-  if(!autoIdentityReady||!autoConditionReady||!autoCenteringReady){lastEstimate=null;$('gradeResults').classList.remove('empty');const missing=[!autoIdentityReady?'a verified exact card identity':null,!autoConditionReady?'reliable visible-condition data':null,!autoCenteringReady?'reliable front/back centering':null].filter(Boolean).join(', ').replace(/, ([^,]*)$/,' and $1');$('gradeResults').innerHTML=`<div class="warn"><strong>Automatic grade not available yet.</strong> Card Lab is missing ${esc(missing)} and will not invent a grade.</div>`;return}
-  lastEstimate=companyGrades();const e=lastEstimate,q=e.confidence>=80?'good':e.confidence>=60?'warn':'bad';$('gradeResults').classList.remove('empty');$('gradeResults').innerHTML=`<div class="grade-grid"><div class="grade-box"><small>PSA estimate</small><b>${fmtGrade(e.psa,'PSA')}</b><small>whole-number scale</small></div><div class="grade-box"><small>BGS estimate</small><b>${fmtGrade(e.bgs,'BGS')}</b><small>C ${e.bgsSubs.centering} · Co ${e.bgsSubs.corners} · E ${e.bgsSubs.edges} · S ${e.bgsSubs.surface}</small></div><div class="grade-box"><small>CGC estimate</small><b>${fmtGrade(e.cgc,'CGC')}</b><small>published-scale approximation</small></div><div class="grade-box"><small>SGC estimate</small><b>${fmtGrade(e.sgc,'SGC')}</b><small>published-scale approximation</small></div></div><div class="confidence ${q}">Confidence ${e.confidence}% · Front ${e.centering.front.lr[0].toFixed(1)}/${e.centering.front.lr[1].toFixed(1)} L/R, ${e.centering.front.tb[0].toFixed(1)}/${e.centering.front.tb[1].toFixed(1)} T/B · Back ${e.centering.back.lr[0].toFixed(1)}/${e.centering.back.lr[1].toFixed(1)} L/R, ${e.centering.back.tb[0].toFixed(1)}/${e.centering.back.tb[1].toFixed(1)} T/B.</div><div class="hint">Pre-grade estimate only. Microscopic defects, alterations, texture/indentations and in-hand eye appeal may change a professional grade.</div>${e.flags.length?'<ul class="hint">'+e.flags.map(x=>`<li>${esc(x)}</li>`).join('')+'</ul>':''}`;
+  if(!autoIdentityReady||!autoConditionReady||!autoCenteringReady){lastEstimate=null;$('gradeResults').classList.remove('empty');const missing=[!autoIdentityReady?'a verified exact card identity':null,!autoConditionReady?'reliable visible-condition data':null,!autoCenteringReady?'reliable front/back centering':null].filter(Boolean).join(', ').replace(/, ([^,]*)$/,' and $1');$('gradeResults').innerHTML=`<div class="warn"><strong>Automatic grade not available yet.</strong> Card Lab is missing ${esc(missing)} and will not invent a grade.</div>`;renderQuickSummary();return}
+  lastEstimate=companyGrades();const e=lastEstimate,q=e.confidence>=80?'good':e.confidence>=60?'warn':'bad';$('gradeResults').classList.remove('empty');$('gradeResults').innerHTML=`<div class="grade-grid"><div class="grade-box"><small>PSA estimate</small><b>${fmtGrade(e.psa,'PSA')}</b><small>whole-number scale</small></div><div class="grade-box"><small>BGS estimate</small><b>${fmtGrade(e.bgs,'BGS')}</b><small>C ${e.bgsSubs.centering} · Co ${e.bgsSubs.corners} · E ${e.bgsSubs.edges} · S ${e.bgsSubs.surface}</small></div><div class="grade-box"><small>CGC estimate</small><b>${fmtGrade(e.cgc,'CGC')}</b><small>published-scale approximation</small></div><div class="grade-box"><small>SGC estimate</small><b>${fmtGrade(e.sgc,'SGC')}</b><small>published-scale approximation</small></div></div><div class="confidence ${q}">Confidence ${e.confidence}% · Front ${e.centering.front.lr[0].toFixed(1)}/${e.centering.front.lr[1].toFixed(1)} L/R, ${e.centering.front.tb[0].toFixed(1)}/${e.centering.front.tb[1].toFixed(1)} T/B · Back ${e.centering.back.lr[0].toFixed(1)}/${e.centering.back.lr[1].toFixed(1)} L/R, ${e.centering.back.tb[0].toFixed(1)}/${e.centering.back.tb[1].toFixed(1)} T/B.</div><div class="hint">Pre-grade estimate only. Microscopic defects, alterations, texture/indentations and in-hand eye appeal may change a professional grade.</div>${e.flags.length?'<ul class="hint">'+e.flags.map(x=>`<li>${esc(x)}</li>`).join('')+'</ul>':''}`;;renderQuickSummary();
 }
 
 function cardQuery(){return [$('year').value,$('set').value,$('subject').value,$('cardNo').value,$('variation').value].filter(Boolean).join(' ').trim()}
@@ -707,6 +924,8 @@ function currentRecordBase(){
     frontQuality:frontData?.quality||null,
     backQuality:backData?.quality||null,
     identityLocked,
+    verificationStatus:backendAnalysis?.verification_status||'unverified',variantStatus:backendAnalysis?.variant_status||'unknown',
+    verifiedIdentity:autoIdentityReady?cloneData(backendAnalysis?.identity||null):null,userSavedIdentity:cloneData(currentIdentityFields()),
     identification:{backend:cloneData(backendAnalysis),meta:cloneData(analysisMeta),ebay:cloneData(ebayData),market:cloneData(marketData),suggestions:cloneData(ocrSuggestions),frontText:ocrRaw.front,backText:ocrRaw.back},
     analysisSnapshot:cloneData(analysisSnapshot),
     centering:cloneData(centering()),
@@ -729,32 +948,44 @@ async function findSamePhysicalCard(){
   }
   return all.find(c=>c.front===frontData?.dataUrl&&c.back===backData?.dataUrl)||null;
 }
-async function saveCardAutomatic({appendHistory=true,reidentify=false}={}){
-  if(!autoIdentityReady)return;
+async function saveCardManual(){
+  if(!analysisSnapshot||!frontData||!backData){toast('Analyze the card first');return}
   const base=currentRecordBase();
-  if(!base.subject||!base.cardNo||!base.set)return;
+  const diff=identityDiffFromBackend();
 
   let existing=currentCardId?await dbGet(currentCardId):null;
   if(!existing){
     const same=await findSamePhysicalCard();
-    if(same){existing=same;currentCardId=same.id;identityLocked=true}
+    if(same){
+      const ok=confirm(`These exact photos are already saved as card #${same.id}. Update that existing card instead?`);
+      if(!ok)return;
+      existing=same;currentCardId=same.id;
+    }
   }
 
   const rec={...(existing||{}),...base};
   rec.createdAt=existing?.createdAt||new Date().toISOString();
+  rec.collectionAddedAt=existing?.collectionAddedAt||new Date().toISOString();
   rec.id=existing?.id;
   rec.history=Array.isArray(existing?.history)?[...existing.history]:[];
   rec.photoVersions=existing?.photoVersions&&typeof existing.photoVersions==='object'?{...existing.photoVersions}:{};
+  rec.verificationStatus=backendAnalysis?.verification_status||'unverified';
+  rec.variantStatus=backendAnalysis?.variant_status||'unknown';
+  rec.verifiedIdentity=['verified','locked'].includes(rec.verificationStatus)&&backendAnalysis?.variant_status!=='unresolved'?cloneData(backendAnalysis?.identity||null):null;
+  rec.userSavedIdentity=cloneData(currentIdentityFields());
+  rec.identityLocked=Boolean(rec.verifiedIdentity);
+  rec.manualCorrections=Array.isArray(existing?.manualCorrections)?[...existing.manualCorrections]:[];
+  if(Object.keys(diff).length)rec.manualCorrections.push({at:new Date().toISOString(),differences:cloneData(diff)});
   const pKey=photoKey();
-  if(!rec.photoVersions[pKey]){
-    rec.photoVersions[pKey]={front:frontData?.dataUrl||null,back:backData?.dataUrl||null,frontQuality:cloneData(frontData?.quality||null),backQuality:cloneData(backData?.quality||null),savedAt:new Date().toISOString()};
-  }
-  if(appendHistory)rec.history.push(makeHistoryEntry());
+  if(!rec.photoVersions[pKey])rec.photoVersions[pKey]={front:frontData?.dataUrl||null,back:backData?.dataUrl||null,frontQuality:cloneData(frontData?.quality||null),backQuality:cloneData(backData?.quality||null),savedAt:new Date().toISOString()};
+  rec.history.push(makeHistoryEntry());
 
   if(rec.id){await dbPut(rec);currentCardId=rec.id}else{delete rec.id;currentCardId=await dbAdd(rec)}
-  currentHistory=rec.history;identityLocked=true;currentOpenedAt=rec.updatedAt;
-  if($('saveStatus'))$('saveStatus').textContent=`Saved locally · card #${currentCardId} · ${rec.history.length} analysis ${rec.history.length===1?'snapshot':'snapshots'} · identity locked`;
-  await renderCollection();renderHistory();await persistDraft();
+  currentHistory=rec.history;identityLocked=Boolean(rec.verifiedIdentity);analysisDirty=false;currentOpenedAt=rec.updatedAt;
+  if(Object.keys(diff).length)captureCorrectionCase(diff);
+  if(identityLocked)rememberVerifiedReference();
+  if($('saveStatus'))$('saveStatus').textContent=`Saved manually · card #${currentCardId} · ${rec.verificationStatus}${Object.keys(diff).length?' · manual correction recorded':''}`;
+  updateCollectionAction();await renderCollection();renderHistory();await persistDraft();toast(existing?'Collection card updated':'Added to Collection');
 }
 
 function setFormFromSaved(card){
@@ -772,7 +1003,7 @@ function setFormFromSaved(card){
 }
 async function openSavedCard(id){
   const card=await dbGet(Number(id));if(!card){toast('Saved card not found');return}
-  currentCardId=card.id;identityLocked=savedIdentityTrusted(card);currentHistory=Array.isArray(card.history)?card.history:[];currentOpenedAt=card.updatedAt||card.createdAt||null;
+  currentCardId=card.id;identityLocked=savedIdentityTrusted(card);currentHistory=Array.isArray(card.history)?card.history:[];currentOpenedAt=card.updatedAt||card.createdAt||null;analysisDirty=false;analysisPhotoKey=card.frontHash&&card.backHash?`${card.frontHash}-${card.backHash}`:null;
   frontData=card.front?{dataUrl:card.front,quality:card.frontQuality||{score:0,glare:0,sharp:0},bounds:null,fingerprint:card.frontFingerprint||null,contentHash:card.frontHash||null}:null;
   backData=card.back?{dataUrl:card.back,quality:card.backQuality||{score:0,glare:0,sharp:0},bounds:null,fingerprint:card.backFingerprint||null,contentHash:card.backHash||null}:null;
   if(frontData)showStoredPhoto('front',frontData);if(backData)showStoredPhoto('back',backData);
@@ -783,7 +1014,7 @@ async function openSavedCard(id){
   updateCentering();renderConditionSummary();renderEstimate();if(backendAnalysis)renderBackendSummary(backendAnalysis,ebayData);renderMarket();renderHistory();renderDiagnostics(analysisSnapshot);
   if($('saveStatus'))$('saveStatus').textContent=identityLocked?`Saved locally · card #${card.id} · ${currentHistory.length} analysis ${currentHistory.length===1?'snapshot':'snapshots'} · verified identity locked`:`Saved locally · card #${card.id} · legacy/unverified identity must be verified by the current Card Lab pipeline`;
   setIdentifyStatus(identityLocked?'Saved card opened · Re-analyze refreshes condition, grades, and eBay while keeping the verified identity. Use Re-identify only if the identity is wrong.':'Saved card opened from an older/unverified analysis · tap Re-identify card once to verify it with the current source pipeline.');
-  document.querySelector('[data-tab="grade"]').click();window.scrollTo({top:0,behavior:'smooth'});await persistDraft();
+  updateCollectionAction();renderQuickSummary();document.querySelector('[data-tab="grade"]').click();window.scrollTo({top:0,behavior:'smooth'});await persistDraft();
 }
 async function deleteHistoryEntry(entryId){
   if(!currentCardId)return;
@@ -798,17 +1029,26 @@ async function deleteHistoryEntry(entryId){
   card.updatedAt=new Date().toISOString();await dbPut(card);currentHistory=card.history;renderHistory();
   toast(before!==card.history.length?'History entry deleted':'History entry not found');
 }
+function historyDeltaText(current,older){
+  if(!older)return '';
+  const changes=[];const a=current?.estimate||{},b=older?.estimate||{};
+  for(const k of ['psa','bgs','cgc','sgc']){const av=Number(a[k]),bv=Number(b[k]);if(Number.isFinite(av)&&Number.isFinite(bv)&&av!==bv)changes.push(`${k.toUpperCase()} ${bv}→${av}`)}
+  const ar=Number(current?.market?.stats?.raw?.value??current?.market?.stats?.raw?.median),br=Number(older?.market?.stats?.raw?.value??older?.market?.stats?.raw?.median);if(Number.isFinite(ar)&&Number.isFinite(br)&&Math.abs(ar-br)>=.01)changes.push(`Raw ${formatMoney(br)}→${formatMoney(ar)}`);
+  const ac=current?.centering?.front?.lr,bc=older?.centering?.front?.lr;if(Array.isArray(ac)&&Array.isArray(bc)){const aw=Math.max(...ac.map(Number)),bw=Math.max(...bc.map(Number));if(Number.isFinite(aw)&&Number.isFinite(bw)&&Math.abs(aw-bw)>=.5)changes.push(`Front centering ${bw.toFixed(1)}/${(100-bw).toFixed(1)}→${aw.toFixed(1)}/${(100-aw).toFixed(1)}`)}
+  return changes.slice(0,4).join(' · ');
+}
 function renderHistory(){
   const root=$('historyList'),summary=$('historySummary');if(!root)return;
   const rows=[...(currentHistory||[])].sort((a,b)=>new Date(b.analyzedAt)-new Date(a.analyzedAt));
-  if(summary)summary.textContent=currentCardId?`${rows.length} saved analysis ${rows.length===1?'snapshot':'snapshots'} for card #${currentCardId}`:'History begins after a verified card is saved.';
+  if(summary)summary.textContent=currentCardId?`${rows.length} saved analysis ${rows.length===1?'snapshot':'snapshots'} for card #${currentCardId}`:'History begins after you manually add or update a card in Collection.';
   if(!rows.length){root.innerHTML='<div class="hint">No saved analysis history yet.</div>';return}
   root.innerHTML=rows.map((h,idx)=>{
     const e=h.estimate||{},c=h.centering||{},raw=h.market?.stats?.raw;
     const grades=[`PSA ${fmtGrade(e.psa??'-','PSA')}`,`BGS ${fmtGrade(e.bgs??'-','BGS')}`,`CGC ${fmtGrade(e.cgc??'-','CGC')}`,`SGC ${fmtGrade(e.sgc??'-','SGC')}`].join(' · ');
     const cent=c.front?.lr?`Front ${c.front.lr[0].toFixed(1)}/${c.front.lr[1].toFixed(1)} · Back ${c.back?.lr?.[0]?.toFixed?.(1)??'-'}/${c.back?.lr?.[1]?.toFixed?.(1)??'-'}`:'Centering unavailable';
     const market=raw?`Raw value ${formatMoney(raw.value??raw.median)} (${raw.sampleSize} matches)`:'No raw market snapshot';
-    return `<div class="history-item"><div><strong>${esc(formatDateTime(h.analyzedAt))}${idx===0?' · newest':''}</strong><div class="hint">${esc(grades)}</div><div class="hint">${esc(cent)} · ${esc(market)}</div></div><button class="danger compact" data-history-delete="${esc(h.id)}">Delete</button></div>`;
+    const delta=historyDeltaText(h,rows[idx+1]);
+    return `<div class="history-item"><div><strong>${esc(formatDateTime(h.analyzedAt))}${idx===0?' · newest':''}</strong><div class="hint">${esc(grades)}</div><div class="hint">${esc(cent)} · ${esc(market)}</div>${delta?`<div class="hint good">Changed: ${esc(delta)}</div>`:''}</div><button class="danger compact" data-history-delete="${esc(h.id)}">Delete</button></div>`;
   }).join('');
   root.querySelectorAll('[data-history-delete]').forEach(b=>b.onclick=async()=>{if(confirm('Delete only this analysis-history entry? The card and other history entries will remain.'))await deleteHistoryEntry(b.dataset.historyDelete)});
 }
@@ -821,14 +1061,14 @@ async function resetForm(){
   $('frontPreview').style.display=$('backPreview').style.display='none';
   ['frontCameraInput','frontLibraryInput','backCameraInput','backLibraryInput'].forEach(id=>{if($(id))$(id).value=''});
   if($('frontSavedStatus'))$('frontSavedStatus').textContent='No photo saved yet';if($('backSavedStatus'))$('backSavedStatus').textContent='No photo saved yet';$('frontQuality').innerHTML=$('backQuality').innerHTML='';
-  frontData=backData=lastEstimate=null;analysisSnapshot=backendAnalysis=analysisMeta=ebayData=marketData=null;currentCardId=null;identityLocked=false;currentHistory=[];currentOpenedAt=null;marketFilter='raw';
+  frontData=backData=lastEstimate=null;analysisSnapshot=backendAnalysis=analysisMeta=ebayData=marketData=null;currentCardId=null;identityLocked=false;currentHistory=[];currentOpenedAt=null;analysisPhotoKey=null;analysisDirty=false;localTrustedHintUsed=null;marketFilter='raw';
   centeringMeta={front:null,back:null};autoIdentityReady=autoCenteringReady=autoConditionReady=false;
   await draftClear();$('identifyResults').classList.add('hidden');
-  setIdentifyStatus('Add front and back photos. Card Lab will verify the exact card from trusted online sources before grading or saving it.');
+  setIdentifyStatus('Add front and back photos. Card Lab will analyze the card without adding it to Collection.');
   $('gradeResults').className='results empty';$('gradeResults').textContent='Add front and back photos. Grade estimates will appear automatically.';
   if($('marketResults')){$('marketResults').className='results empty';$('marketResults').textContent='Verified current listing matches will appear automatically after identification.'}renderRawValueHero();renderDiagnostics(null);
   if($('conditionAutoSummary'))$('conditionAutoSummary').textContent='Waiting for analysis.';
-  if($('saveStatus'))$('saveStatus').textContent='A card is saved automatically only after exact identity verification.';
+  if($('saveStatus'))$('saveStatus').textContent='Not in Collection. Analyze first, then add it manually only if you want to keep it.';updateCollectionAction();renderQuickSummary();
   renderHistory();updateCentering();window.scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -865,7 +1105,11 @@ async function savePurchaseDetails(id,price,date){
 async function renderCollection(){
   const all=await dbAll(),term=($('collectionSearch').value||'').toLowerCase();
   const rows=all.filter(c=>JSON.stringify([c.year,c.set,c.subject,c.cardNo,c.variation,c.serialNo]).toLowerCase().includes(term)).sort((a,b)=>new Date(b.updatedAt||b.createdAt||0)-new Date(a.updatedAt||a.createdAt||0));
+  const totalValue=all.reduce((sum,c)=>{const v=Number(c.market?.stats?.raw?.value??c.market?.stats?.raw?.median);return sum+(Number.isFinite(v)?v:0)},0);
+  const totalPaid=all.reduce((sum,c)=>sum+(Number(c.purchasePrice??c.cost)||0),0);
+  const delta=totalValue-totalPaid;
   $('collectionStats').textContent=`${all.length} card${all.length===1?'':'s'} stored locally`;
+  if($('collectionPortfolio'))$('collectionPortfolio').innerHTML=`<span>Raw value <b>${formatMoney(totalValue)}</b></span><span>Paid <b>${formatMoney(totalPaid)}</b></span><span class="${delta>=0?'good':'bad'}">${delta>=0?'+':''}${formatMoney(delta)} vs paid</span>`;
   const root=$('collectionList');if(!rows.length){root.innerHTML='<div class="card-block hint">No matching cards.</div>';return}
   root.innerHTML=rows.map(c=>{
     const stats=c.market?.stats?.raw,med=stats?.value??stats?.median,historyCount=Array.isArray(c.history)?c.history.length:0;
@@ -874,7 +1118,7 @@ async function renderCollection(){
     const deltaText=delta==null?'':` · ${delta>=0?'+':''}${formatMoney(delta)} vs paid`;
     return `<div class="collection-card clickable" data-open="${c.id}">
       <img src="${esc(c.front||'')}" alt="">
-      <div><div class="collection-title">${esc([c.year,c.subject].filter(Boolean).join(' ')||'Untitled card')}</div>
+      <div><div class="collection-title">${esc([c.year,c.subject].filter(Boolean).join(' ')||'Untitled card')} <span class="pill ${['verified','locked'].includes(c.verificationStatus||c.identification?.backend?.verification_status)?'good':'warn'}">${esc(c.verificationStatus||c.identification?.backend?.verification_status||'unverified')}</span></div>
       <div class="collection-sub">${esc([c.set,c.cardNo?`#${c.cardNo}`:null,c.variation,c.serialNo].filter(Boolean).join(' · '))}</div>
       <div><span class="pill">PSA ${fmtGrade(c.estimate?.psa??'-','PSA')}</span><span class="pill">BGS ${fmtGrade(c.estimate?.bgs??'-','BGS')}</span><span class="pill">CGC ${fmtGrade(c.estimate?.cgc??'-','CGC')}</span><span class="pill">SGC ${fmtGrade(c.estimate?.sgc??'-','SGC')}</span></div>
       <div class="hint">${med!=null?`Raw value ${formatMoney(med)} · `:''}${esc(paidText)}${esc(deltaText)} · ${historyCount} history</div></div>
@@ -894,9 +1138,16 @@ async function renderCollection(){
 }
 
 function downloadJson(obj,name){const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
-async function exportBackup(){const data=await dbAll();downloadJson({version:5,type:'collection',exportedAt:new Date().toISOString(),cards:data},`card-lab-collection-${new Date().toISOString().slice(0,10)}.json`)}
-async function exportRecovery(){if(!confirm('Full recovery contains your private Cloudflare API key and draft card photos. Export and store it securely?'))return;const data=await dbAll(),draft=await draftGet();downloadJson({version:5,type:'full-recovery',exportedAt:new Date().toISOString(),cards:data,draft,settings:{backendUrl:localStorage.getItem('cardlab.backendUrl')||'',backendKey:localStorage.getItem('cardlab.backendKey')||''}},`card-lab-full-recovery-${new Date().toISOString().slice(0,10)}.json`);toast('Full recovery exported')}
-async function importBackup(file){try{const j=JSON.parse(await file.text());if(!Array.isArray(j.cards))throw 0;for(const c of j.cards){delete c.id;if(c.purchasePrice==null&&c.cost!=null)c.purchasePrice=Number(c.cost)||0;if(c.purchaseDate==null)c.purchaseDate='';await dbAdd(c)}if(j.settings){localStorage.setItem('cardlab.backendUrl',j.settings.backendUrl||'');localStorage.setItem('cardlab.backendKey',j.settings.backendKey||'');loadBackendSettings()}if(j.draft){const {key,...draft}=j.draft;await draftPut({...draft,updatedAt:draft.updatedAt||new Date().toISOString()});await restoreDraft()}toast(`Imported ${j.cards.length} cards${j.settings?' + settings':''}`);renderCollection()}catch(e){console.warn(e);toast('Invalid backup file')}}
+async function exportBackup(){const data=await dbAll();downloadJson({version:6,type:'collection',exportedAt:new Date().toISOString(),cards:data},`card-lab-collection-${new Date().toISOString().slice(0,10)}.json`)}
+async function exportRecovery(){if(!confirm('Full recovery contains your private Cloudflare API key and draft card photos. Export and store it securely?'))return;const data=await dbAll(),draft=await draftGet();downloadJson({version:6,type:'full-recovery',exportedAt:new Date().toISOString(),cards:data,draft,settings:{backendUrl:localStorage.getItem('cardlab.backendUrl')||'',backendKey:localStorage.getItem('cardlab.backendKey')||''},intelligence:{referenceCache:referenceCache(),regressionCases:regressionCases(),telemetry:telemetryRows()}},`card-lab-full-recovery-${new Date().toISOString().slice(0,10)}.json`);toast('Full recovery exported')}
+async function importBackup(file){try{const j=JSON.parse(await file.text());if(!Array.isArray(j.cards))throw 0;for(const c of j.cards){delete c.id;if(c.purchasePrice==null&&c.cost!=null)c.purchasePrice=Number(c.cost)||0;if(c.purchaseDate==null)c.purchaseDate='';await dbAdd(c)}if(j.settings){localStorage.setItem('cardlab.backendUrl',j.settings.backendUrl||'');localStorage.setItem('cardlab.backendKey',j.settings.backendKey||'');loadBackendSettings()}if(j.intelligence){if(Array.isArray(j.intelligence.referenceCache))localJsonSet(REF_CACHE_KEY,j.intelligence.referenceCache);if(Array.isArray(j.intelligence.regressionCases))localJsonSet(REGRESSION_KEY,j.intelligence.regressionCases);if(Array.isArray(j.intelligence.telemetry))localJsonSet(TELEMETRY_KEY,j.intelligence.telemetry)}if(j.draft){const {key,...draft}=j.draft;await draftPut({...draft,updatedAt:draft.updatedAt||new Date().toISOString()});await restoreDraft()}toast(`Imported ${j.cards.length} cards${j.settings?' + settings':''}`);renderCollection()}catch(e){console.warn(e);toast('Invalid backup file')}}
+
+
+function exportRegressionCases(){
+  const rows=regressionCases();
+  downloadJson({version:1,type:'card-lab-regression-cases',exportedAt:new Date().toISOString(),cases:rows},`card-lab-regression-cases-${new Date().toISOString().slice(0,10)}.json`);
+  toast(`Exported ${rows.length} regression case${rows.length===1?'':'s'}`);
+}
 
 let updateReloading=false,lastUpdateCheck=0;
 async function registerUpdater(){if(!('serviceWorker' in navigator))return;try{const reg=await navigator.serviceWorker.register(`./sw.js?v=${APP_VERSION}`,{updateViaCache:'none'});navigator.serviceWorker.addEventListener('controllerchange',()=>{if(updateReloading)return;updateReloading=true;location.reload()});const activateWaiting=()=>{if(reg.waiting)reg.waiting.postMessage({type:'SKIP_WAITING'})};reg.addEventListener('updatefound',()=>{const w=reg.installing;if(!w)return;w.addEventListener('statechange',()=>{if(w.state==='installed'&&navigator.serviceWorker.controller)w.postMessage({type:'SKIP_WAITING'})})});await reg.update();activateWaiting()}catch(e){console.warn('Updater registration failed',e)}}
@@ -905,7 +1156,7 @@ async function requestPersistentStorage(){try{if(navigator.storage?.persist)awai
 
 function bind(){
   document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='collection')renderCollection()});
-  $('frontCameraBtn').onclick=()=>$('frontCameraInput').click();$('frontLibraryBtn').onclick=()=>$('frontLibraryInput').click();$('backCameraBtn').onclick=()=>$('backCameraInput').click();$('backLibraryBtn').onclick=()=>$('backLibraryInput').click();
+  $('frontCameraBtn').onclick=()=>openGuidedCamera('front');$('frontLibraryBtn').onclick=()=>$('frontLibraryInput').click();$('backCameraBtn').onclick=()=>openGuidedCamera('back');$('backLibraryBtn').onclick=()=>$('backLibraryInput').click();if($('guideCaptureBtn'))$('guideCaptureBtn').onclick=captureGuidedPhoto;if($('guideCancelBtn'))$('guideCancelBtn').onclick=stopGuidedCamera;
   ['frontCameraInput','frontLibraryInput'].forEach(id=>{$(id).onchange=()=>handlePhoto($(id),'frontPreview','frontQuality','front')});['backCameraInput','backLibraryInput'].forEach(id=>{$(id).onchange=()=>handlePhoto($(id),'backPreview','backQuality','back')});
   $('autoFrontCenterBtn').onclick=()=>measureCentering('front');$('autoBackCenterBtn').onclick=()=>measureCentering('back');
   for(const side of ['front','back'])for(const suffix of ['BorderL','BorderR','BorderT','BorderB'])$(side+suffix).oninput=()=>markCenteringManual(side);
@@ -913,10 +1164,10 @@ function bind(){
   if($('cost')){$('cost').oninput=renderRawValueHero;$('cost').onchange=()=>saveOpenCardBookkeeping()}
   if($('purchaseDate'))$('purchaseDate').onchange=()=>saveOpenCardBookkeeping();
   if($('notes'))$('notes').onchange=()=>saveOpenCardBookkeeping();
-  if($('runSelfTestBtn'))$('runSelfTestBtn').onclick=runRegressionSelfTest;
-  $('identifyBtn').onclick=()=>identifyFromPhotos(false);if($('reidentifyBtn'))$('reidentifyBtn').onclick=()=>identifyFromPhotos(true);if($('refreshMarketBtn'))$('refreshMarketBtn').onclick=refreshMarketOnly;$('ebayBtn').onclick=ebaySearch;$('saveBackendBtn').onclick=saveBackendSettings;$('testBackendBtn').onclick=testBackend;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;if($('exportRecoveryBtn'))$('exportRecoveryBtn').onclick=exportRecovery;if($('checkUpdateBtn'))$('checkUpdateBtn').onclick=()=>checkForUpdate(true);$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
+  if($('runSelfTestBtn'))$('runSelfTestBtn').onclick=runRegressionSelfTest;if($('exportRegressionBtn'))$('exportRegressionBtn').onclick=exportRegressionCases;if($('nextCardBtn'))$('nextCardBtn').onclick=async()=>{if(analysisDirty&&!currentCardId&&!confirm('Start the next card without adding this analysis to Collection?'))return;await resetForm();toast('Ready for next card')};
+  $('identifyBtn').onclick=()=>identifyFromPhotos(false);if($('reidentifyBtn'))$('reidentifyBtn').onclick=()=>identifyFromPhotos(true);if($('retryConditionBtn'))$('retryConditionBtn').onclick=retryConditionOnly;if($('refreshMarketBtn'))$('refreshMarketBtn').onclick=refreshMarketOnly;if($('addCollectionBtn'))$('addCollectionBtn').onclick=saveCardManual;$('ebayBtn').onclick=ebaySearch;$('saveBackendBtn').onclick=saveBackendSettings;$('testBackendBtn').onclick=testBackend;$('resetBtn').onclick=resetForm;$('collectionSearch').oninput=renderCollection;$('exportBtn').onclick=exportBackup;if($('exportRecoveryBtn'))$('exportRecoveryBtn').onclick=exportRecovery;if($('checkUpdateBtn'))$('checkUpdateBtn').onclick=()=>checkForUpdate(true);$('importInput').onchange=()=>{const f=$('importInput').files?.[0];if(f)importBackup(f)};$('clearBtn').onclick=async()=>{if(confirm('Erase the entire local card collection? This cannot be undone unless you exported a backup.')){await dbClear();renderCollection();toast('Collection erased')}};
   if($('marketTabs'))$('marketTabs').querySelectorAll('[data-market-filter]').forEach(b=>b.onclick=()=>{marketFilter=b.dataset.marketFilter||'raw';renderMarket()});
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('installBtn').classList.add('hidden')}else toast('Use your browser Add to Home Screen option')};
 }
 
-(async function init(){await openDB();bind();loadBackendSettings();updateCentering();renderRawValueHero();renderDiagnostics(null);await restoreDraft();await requestPersistentStorage();await registerUpdater();setTimeout(()=>checkForUpdate(false),1000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkForUpdate(false)});window.addEventListener('pageshow',()=>checkForUpdate(false))})();
+(async function init(){await openDB();bind();loadBackendSettings();updateCentering();renderRawValueHero();renderDiagnostics(null);updateCollectionAction();renderQuickSummary();await restoreDraft();await requestPersistentStorage();await registerUpdater();setTimeout(()=>checkForUpdate(false),1000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkForUpdate(false);else if(cameraStream)stopGuidedCamera()});window.addEventListener('pageshow',()=>checkForUpdate(false))})();

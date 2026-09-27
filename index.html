@@ -9,14 +9,14 @@
   <meta name="apple-mobile-web-app-title" content="Card Lab" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-180.png" />
-  <link rel="stylesheet" href="styles.css?v=4.0.0" />
+  <link rel="stylesheet" href="styles.css?v=5.0.0" />
   <title>Card Grade & Collection Lab</title>
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Verified identity + pre-grading + market · v4.0.0</p>
+      <p>Verified identity + pre-grading + market · v5.0.0</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -31,7 +31,7 @@
   <main>
     <section id="grade" class="panel active">
       <div class="notice">
-        <strong>Pre-grade only.</strong> Add front and back photos. Card Lab verifies the exact card against trusted online sources before it can grade or auto-save it. Re-analysis of a saved card keeps its verified identity locked unless you explicitly choose Re-identify.
+        <strong>Pre-grade only.</strong> Add front and back photos. Card Lab analyzes the card without adding it to your Collection. After reviewing identity, grade potential, and value, use Add to Collection only if you want to keep the record.
       </div>
 
       <div class="card-block">
@@ -41,7 +41,7 @@
           <div class="photo-box">
             <strong>Front</strong>
             <div class="photo-actions">
-              <button id="frontCameraBtn" class="file-button" type="button">Take photo</button>
+              <button id="frontCameraBtn" class="file-button" type="button">Guided camera</button>
               <button id="frontLibraryBtn" class="file-button" type="button">Photo Library</button>
               <input id="frontCameraInput" class="hidden-file" type="file" accept="image/*" capture="environment" />
               <input id="frontLibraryInput" class="hidden-file" type="file" accept="image/*" />
@@ -53,7 +53,7 @@
           <div class="photo-box">
             <strong>Back</strong>
             <div class="photo-actions">
-              <button id="backCameraBtn" class="file-button" type="button">Take photo</button>
+              <button id="backCameraBtn" class="file-button" type="button">Guided camera</button>
               <button id="backLibraryBtn" class="file-button" type="button">Photo Library</button>
               <input id="backCameraInput" class="hidden-file" type="file" accept="image/*" capture="environment" />
               <input id="backLibraryInput" class="hidden-file" type="file" accept="image/*" />
@@ -69,6 +69,7 @@
           <span id="identifyStatus" class="hint">First analysis verifies identity from trusted sources. Saved cards keep that verified identity locked; Re-identify is only for correcting an identity.</span>
         </div>
         <div id="identifyResults" class="identify-results hidden"></div>
+        <div id="quickSummary" class="quick-summary"><div><strong>Ready for analysis</strong><div class="hint">Identity, grade potential, and raw value will appear here.</div></div><div class="quick-value"><small>Raw value</small><b>—</b></div></div>
       </div>
 
       <div class="card-block">
@@ -110,7 +111,7 @@
 
       <div class="card-block">
         <h2>4. Condition inspection <span class="auto-tag">automatic</span></h2>
-        <p class="hint">Filled automatically from visible photo evidence. Use the optional correction controls only if you see something the camera missed.</p><div id="conditionAutoSummary" class="auto-summary">Waiting for analysis.</div><details class="optional-controls"><summary>Manual condition correction (optional)</summary>
+        <p class="hint">Filled automatically from visible photo evidence. Unsupported or internally inconsistent scores are rejected instead of used. Use the optional correction controls only if you see something the camera missed.</p><div id="conditionAutoSummary" class="auto-summary">Waiting for analysis.</div><div class="row wrap"><button id="retryConditionBtn" class="secondary compact" type="button">Retry condition only</button><span class="hint">Does not rerun identity or eBay.</span></div><details class="optional-controls"><summary>Manual condition correction (optional)</summary>
         <div class="grid two">
           <label>Corners
             <select id="corners">
@@ -164,7 +165,8 @@
           <button id="refreshMarketBtn" class="secondary compact" type="button">Refresh eBay only</button>
         </div>
         <div id="marketResults" class="results empty">Verified current listing matches will appear automatically after identification.</div>
-        <div id="saveStatus" class="hint">A card is saved automatically only after exact identity verification.</div>
+        <div id="saveStatus" class="hint">Not in Collection. Analyze first, then add it manually only if you want to keep it.</div>
+        <div class="row wrap"><button id="addCollectionBtn" class="primary hidden" type="button">Add to Collection</button><button id="nextCardBtn" class="secondary" type="button">Next card</button><span class="hint">Collection saving is always manual. Next card clears the current scan but keeps settings and learned references.</span></div>
         <details class="optional-controls"><summary>Optional bookkeeping</summary>
           <div class="grid two">
             <label>Price paid ($)<input id="cost" type="number" min="0" step="0.01" placeholder="Optional" /></label>
@@ -180,14 +182,14 @@
 
       <div class="card-block">
         <h2>Analysis history</h2>
-        <p id="historySummary" class="hint">History begins after a verified card is saved.</p>
+        <p id="historySummary" class="hint">History begins after you manually add or update a card in Collection.</p>
         <div id="historyList" class="history-list"><div class="hint">No saved analysis history yet.</div></div>
       </div>
     </section>
 
     <section id="collection" class="panel">
       <div class="collection-head">
-        <div><h2>Collection</h2><p id="collectionStats" class="hint">Tap a saved card to reopen its complete record and analysis history.</p></div>
+        <div><h2>Collection</h2><p id="collectionStats" class="hint">Tap a saved card to reopen its complete record and analysis history.</p><div id="collectionPortfolio" class="portfolio-summary"></div></div>
         <input id="collectionSearch" type="search" placeholder="Search collection" />
       </div>
       <div id="collectionList" class="collection-list"></div>
@@ -236,7 +238,7 @@
       <div class="card-block">
         <h2>Diagnostic mode</h2>
         <p class="hint">Shows the most recent stage timings, model path, field confidence, and evidence-gate status. This does not send additional data or rerun analysis.</p>
-        <div class="row wrap"><button id="runSelfTestBtn" class="secondary compact" type="button">Run regression self-test</button><span id="selfTestStatus" class="hint"></span></div>
+        <div class="row wrap"><button id="runSelfTestBtn" class="secondary compact" type="button">Run regression self-test</button><button id="exportRegressionBtn" class="secondary compact" type="button">Export captured regression cases</button><span id="selfTestStatus" class="hint"></span></div>
         <details>
           <summary>Show latest diagnostics</summary>
           <pre id="diagnosticOutput" class="diagnostic-output">No analysis diagnostics yet.</pre>
@@ -249,7 +251,17 @@
     </section>
   </main>
 
+
+  <div id="cameraAssist" class="camera-assist hidden" role="dialog" aria-modal="true" aria-label="Guided card camera">
+    <div class="camera-sheet">
+      <div class="camera-head"><strong id="guideTitle">Guided card photo</strong><button id="guideCancelBtn" class="ghost compact" type="button">Cancel</button></div>
+      <div class="camera-stage"><video id="guideVideo" playsinline autoplay muted></video><div class="camera-card-frame" aria-hidden="true"></div></div>
+      <div id="guideStatus" class="camera-status">Align the card inside the frame.</div>
+      <label class="camera-auto"><input id="guideAuto" type="checkbox" checked /> Auto-capture when framing and sharpness are stable</label>
+      <button id="guideCaptureBtn" class="primary" type="button">Capture now</button>
+    </div>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=4.0.0" defer></script>
+  <script src="app.js?v=5.0.0" defer></script>
 </body>
 </html>
