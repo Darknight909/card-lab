@@ -1,32 +1,36 @@
-# Card Lab v2.0 — GitHub Pages frontend
+# Card Lab v3.0 — GitHub Pages frontend
 
-Card Lab 2.0 replaces the incremental v1 identification workflow with a single evidence pipeline.
+Card Lab 3.0 is a full-system update focused on verified identity, conservative pre-grading, usable current-market results, and durable collection history.
 
-## Automatic workflow
-1. Front and back photos are saved locally in IndexedDB.
-2. Card Lab detects/crops the card and measures centering locally on the phone.
-3. The Worker sends analysis copies to Google Cloud Vision for Web Detection + OCR.
-4. The Worker verifies the resulting identity clues with Tavily text/web results.
-5. Cloudflare Workers AI inspects visible corners, edges, surface and print/focus condition only.
-6. Card Lab calculates PSA/BGS/CGC/SGC pre-grade estimates locally only when condition and centering are reliable.
-7. Current eBay listing results are loaded automatically when available.
-8. The completed record and photos stay in the phone's local collection.
+## Core workflow
+1. Front and back photos are saved locally on the phone.
+2. A photo-quality gate checks blur/glare/card isolation before spending online analysis calls.
+3. Google Cloud Vision extracts OCR and visual-web clues.
+4. The Worker searches trusted card/checklist sources and accepts an exact identity only after deterministic evidence gates pass.
+5. The verified identity is locked for saved cards. Normal Re-analyze does not re-identify the card.
+6. Card Lab measures centering locally and cross-checks it against independent vision evidence. If those disagree materially, the grade is withheld rather than guessed.
+7. Cloudflare Workers AI inspects visible corners, edges, surface, focus, and defects.
+8. PSA/BGS/CGC/SGC pre-grade estimates are calculated locally only when required evidence is reliable.
+9. eBay market data refreshes automatically. When eBay Browse API credentials are connected, results are live structured listings with direct links, current asking prices, shipping, condition, seller information, and raw/graded filtering.
+10. Exact verified cards auto-save locally. Re-analysis updates the same card and creates a separate dated analysis-history snapshot.
 
-## Important changes from v1.8
-- Google visual-web matching is the primary identity source rather than a generic vision-model guess.
-- Exact OCR card codes are treated as stronger evidence than jersey numbers or statistics years.
-- Centering is calculated locally and withheld when the design borders cannot be measured reliably.
-- Draft analysis results are cached locally, so reopening/updating the app does not automatically spend another online analysis request.
-- Take Photo and Photo Library remain separate controls; hidden file inputs eliminate the misleading iOS “no file selected” display.
-- Front/back analysis images use a higher-resolution detected card crop.
-- No grade is shown when the evidence needed to support it is missing.
+## Collection and history
+- Tap a saved card to reopen its photos, identity, grade, centering, condition, market data, and history.
+- Re-analyze keeps the verified identity locked and refreshes condition, grade, and market.
+- Re-identify explicitly runs the identity pipeline again if the original identification is wrong.
+- Each analysis creates an independent dated history snapshot.
+- A single history entry can be deleted without deleting the card or other history entries.
+- Photo versions are deduplicated by an exact local SHA-256 content hash to reduce storage use.
+- Automatic duplicate-record merging occurs only when the exact same saved front/back image bytes are reused. Visually similar cards are never auto-merged because they may be separate physical copies.
 
-## Update existing GitHub Pages app
-Upload/replace all files in the root of the existing `card-lab` repository and commit.
-Do not delete/re-add the iPhone Home Screen app. Open the installed app and use Settings → Check for update if it does not refresh automatically.
+## Identity rules
+AI/OCR may extract clues, but it is not the source of truth for card identity. Exact identity must be corroborated by trusted online sources. Date-shaped text such as birth dates is rejected as a card-number candidate. Exact alphanumeric card codes are weighted strongly and must match source evidence.
 
 ## Privacy
-Collection records and saved card photos remain in local browser storage. Analysis copies are sent transiently through the user's Worker to Google Cloud Vision and Cloudflare Workers AI. Tavily receives text/search clues, not card images. The supplied Worker does not persist cards/photos in KV, R2, D1, or Durable Objects.
+The collection, saved photos, and history remain in local browser storage. Analysis images are transmitted transiently to Google Cloud Vision and Cloudflare Workers AI. Tavily receives text/search clues only. If official eBay image search is enabled, the front analysis image is also sent transiently to eBay. The Worker does not persist the collection or card photos.
+
+## Update existing app
+Upload/replace the files in the root of the existing `card-lab` GitHub repository and commit. Do not delete or reinstall the iPhone Home Screen app. Open Card Lab and use Settings → Check for update if the new shell does not load automatically.
 
 ## Grading limitation
-This is a pre-grade estimate. Phone photos cannot rule out microscopic scratches, indentations, trimming, restoration, surface texture, or other in-hand inspection factors used by professional graders.
+Card Lab is a pre-grading tool. Phone photographs cannot rule out all microscopic scratches, indentations, alterations, texture defects, or in-hand eye-appeal factors used by professional graders.

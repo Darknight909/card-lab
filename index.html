@@ -9,14 +9,14 @@
   <meta name="apple-mobile-web-app-title" content="Card Lab" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-180.png" />
-  <link rel="stylesheet" href="styles.css?v=2.0" />
+  <link rel="stylesheet" href="styles.css?v=3.0" />
   <title>Card Grade & Collection Lab</title>
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>Card Lab</h1>
-      <p>Private pre-grading + collection tracker · v2.0</p>
+      <p>Verified identity + pre-grading + market · v3.0</p>
     </div>
     <button id="installBtn" class="ghost hidden">Install</button>
   </header>
@@ -31,7 +31,7 @@
   <main>
     <section id="grade" class="panel active">
       <div class="notice">
-        <strong>Pre-grade only.</strong> Add front and back photos. Sections 2–6 are filled automatically from photo analysis and online identity verification. Optional manual corrections remain available because photos cannot reveal every defect or reproduce a professional grader's judgment.
+        <strong>Pre-grade only.</strong> Add front and back photos. Card Lab verifies the exact card against trusted online sources before it can grade or auto-save it. Re-analysis of a saved card keeps its verified identity locked unless you explicitly choose Re-identify.
       </div>
 
       <div class="card-block">
@@ -64,8 +64,9 @@
           </div>
         </div>
         <div class="row wrap identify-row">
-          <button id="identifyBtn" class="primary">Re-analyze card</button>
-          <span id="identifyStatus" class="hint">Google visual matching + OCR identify the card; Cloudflare analyzes visible condition. Photos are processed transiently and your collection stays on this phone.</span>
+          <button id="identifyBtn" class="primary">Analyze / Re-analyze</button>
+          <button id="reidentifyBtn" class="secondary">Re-identify card</button>
+          <span id="identifyStatus" class="hint">First analysis verifies identity from trusted sources. Saved cards keep that verified identity locked; Re-identify is only for correcting an identity.</span>
         </div>
         <div id="identifyResults" class="identify-results hidden"></div>
       </div>
@@ -78,6 +79,7 @@
           <label>Player / Subject<input id="subject" placeholder="Shohei Ohtani" /></label>
           <label>Card #<input id="cardNo" placeholder="#1" /></label>
           <label>Variation / Parallel<input id="variation" placeholder="Refractor /99" /></label>
+          <label>Serial #<input id="serialNo" placeholder="023/199" /></label>
           <label>Category<select id="category"><option>Sports</option><option>TCG</option><option>Non-sport</option><option>Other</option></select></label>
         </div>
       </div>
@@ -149,8 +151,16 @@
 
       <div class="card-block">
         <h2>6. Value / current eBay listings <span class="auto-tag">automatic</span></h2>
-        <div id="marketResults" class="results empty">Current listing matches will appear automatically after identification.</div>
-        <div id="saveStatus" class="hint">The analyzed card will be saved to your local collection automatically.</div>
+        <div class="row wrap market-toolbar">
+          <div id="marketTabs" class="market-tabs" aria-label="eBay listing filter">
+            <button type="button" class="active" data-market-filter="raw">Raw</button>
+            <button type="button" data-market-filter="graded">Graded</button>
+            <button type="button" data-market-filter="all">All</button>
+          </div>
+          <button id="refreshMarketBtn" class="secondary compact" type="button">Refresh eBay only</button>
+        </div>
+        <div id="marketResults" class="results empty">Verified current listing matches will appear automatically after identification.</div>
+        <div id="saveStatus" class="hint">A card is saved automatically only after exact identity verification.</div>
         <details class="optional-controls"><summary>Optional bookkeeping</summary>
           <div class="grid two">
             <label>Acquisition cost ($)<input id="cost" type="number" min="0" step="0.01" placeholder="Optional" /></label>
@@ -162,11 +172,17 @@
           <button id="resetBtn" class="ghost">New card</button>
         </div>
       </div>
+
+      <div class="card-block">
+        <h2>Analysis history</h2>
+        <p id="historySummary" class="hint">History begins after a verified card is saved.</p>
+        <div id="historyList" class="history-list"><div class="hint">No saved analysis history yet.</div></div>
+      </div>
     </section>
 
     <section id="collection" class="panel">
       <div class="collection-head">
-        <div><h2>Collection</h2><p id="collectionStats" class="hint"></p></div>
+        <div><h2>Collection</h2><p id="collectionStats" class="hint">Tap a saved card to reopen its complete record and analysis history.</p></div>
         <input id="collectionSearch" type="search" placeholder="Search collection" />
       </div>
       <div id="collectionList" class="collection-list"></div>
@@ -195,7 +211,7 @@
     <section id="settings" class="panel">
       <div class="card-block">
         <h2>Cloudflare backend</h2>
-        <p class="hint">The Worker coordinates Google Vision visual matching/OCR, web verification, and visible-condition analysis. Your collection remains on this phone.</p>
+        <p class="hint">The Worker coordinates Google Vision OCR/visual discovery, trusted-source identity verification, visible-condition analysis, and current eBay listings when the eBay API is connected. Your collection remains on this phone.</p>
         <label>Worker URL<input id="backendUrl" inputmode="url" placeholder="https://card-lab-api.YOUR-SUBDOMAIN.workers.dev" /></label>
         <label style="margin-top:10px">Private API key<input id="backendKey" type="password" autocomplete="off" placeholder="Your CARDLAB_API_KEY secret" /></label>
         <div class="row wrap"><button id="saveBackendBtn" class="primary">Save backend settings</button><button id="testBackendBtn" class="secondary">Test connection</button><span id="backendStatus" class="hint"></span></div>
@@ -203,7 +219,7 @@
       </div>
       <div class="card-block">
         <h2>Backup & privacy</h2>
-        <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not stored in cloud storage by Card Lab. During automatic analysis, analysis copies of the front/back photos are sent transiently through your Cloudflare Worker to Google Cloud Vision for OCR/visual-web matching and to Cloudflare Workers AI for visible-condition inspection. Tavily receives text/search clues only. The Worker does not write photos or collection data to KV, R2, D1, or Durable Objects.</p>
+        <p>Your collection and compressed card photos are stored locally in this browser's IndexedDB. They are not stored in cloud storage by Card Lab. During automatic analysis, analysis copies of the front/back photos are sent transiently through your Cloudflare Worker to Google Cloud Vision for OCR/visual-web matching and to Cloudflare Workers AI for visible-condition inspection. Tavily receives text/search clues only. If official eBay image search is enabled, an analysis copy of the front is also sent transiently to eBay. The Worker does not write photos or collection data to KV, R2, D1, or Durable Objects.</p>
         <div class="row wrap"><button id="exportBtn" class="secondary">Export collection backup</button><button id="exportRecoveryBtn" class="secondary">Export full recovery</button><label class="file-button">Import backup<input id="importInput" type="file" accept="application/json" /></label><button id="clearBtn" class="danger">Erase local collection</button></div><p class="hint">Full recovery includes the private backend API key and current draft photos. Store that file securely.</p>
       </div>
       <div class="card-block">
@@ -220,6 +236,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=2.0" defer></script>
+  <script src="app.js?v=3.0" defer></script>
 </body>
 </html>
