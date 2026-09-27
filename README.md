@@ -1,4 +1,4 @@
-# Card Lab v6.0.0 — GitHub Pages frontend
+# Card Lab v7.0.0 — GitHub Pages frontend
 
 Card Lab 5.0 is a major optimization release focused on accuracy, stage isolation, manual collection control, speed, and regression protection.
 
@@ -51,3 +51,10 @@ The header should show `v5.0.0`.
 - High-confidence independent centering can rescue a failed local geometry measurement.
 - Condition results consume deterministic severity-to-score mapping from API v6 instead of trusting raw model numeric grades.
 - Native iPhone Take Photo workflow remains the default.
+
+## v7.0.0 verified-source-first release
+- Identity is finalized from trusted online sources; photo AI/OCR supplies search clues only.
+- Full card-number matching rejects prefix false positives.
+- Verified reference centering is the only automatic rescue path when local geometry fails.
+- Extreme centering is fail-closed.
+- Condition remains deterministic after categorical vision inspection.

@@ -1,10 +1,10 @@
 'use strict';
 
-const APP_VERSION = '6.0.0';
+const APP_VERSION = '7.0.0';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 const REF_CACHE_KEY='cardlab.referenceCache.v1', REGRESSION_KEY='cardlab.regressionCases.v1', TELEMETRY_KEY='cardlab.telemetry.v1';
-const FEATURE_FLAGS=Object.freeze({guidedCapture:false,photoQualityGate:true,referenceTemplates:true,stageCaching:true,targetedConsensus:true,severityCondition:true,visionCenteringRescue:true,coreIdentityGate:true,adaptiveMarket:true,localFingerprintHints:true,manualCollectionOnly:true});
+const FEATURE_FLAGS=Object.freeze({guidedCapture:false,photoQualityGate:true,verifiedSourceFirst:true,strictExactCode:true,referenceTemplates:true,stageCaching:true,targetedConsensus:true,severityCondition:true,referenceCenteringOnly:true,coreIdentityGate:true,adaptiveMarket:true,localFingerprintHints:true,manualCollectionOnly:true});
 const PERFORMANCE_BUDGET_MS=Object.freeze({analysis:30000,identity:15000,condition:15000,reference:10000,market:8000});
 let cameraStream=null,cameraSide=null,cameraTimer=null,cameraStableCount=0,cameraCaptureBusy=false;
 
@@ -499,7 +499,7 @@ function renderQuickSummary(){
   const title=[i.year,i.subject,i.cardNo?`#${i.cardNo}`:null,i.variation].filter(Boolean).join(' · ')||'Card not identified yet';
   const raw=marketRawStats(),value=raw?.value??raw?.median;
   const grade=lastEstimate?`PSA ${fmtGrade(lastEstimate.psa,'PSA')} · BGS ${fmtGrade(lastEstimate.bgs,'BGS')}`:'Grade withheld';
-  const statusText=status==='verified'||status==='locked'?'Verified identity':status==='probable'?'Probable identity':'Identity needs review';
+  const statusText=status==='verified'||status==='locked'?'Verified source identity':status==='probable'?'Probable source identity':'Identity needs review';
   el.innerHTML=`<div><strong>${esc(title)}</strong><div class="hint">${esc(statusText)} · ${esc(grade)}</div></div><div class="quick-value"><small>Raw value</small><b>${Number.isFinite(Number(value))?formatMoney(value):'—'}</b></div>`;
 }
 function updateCollectionAction(){
@@ -518,8 +518,10 @@ function renderConditionSummary(){
 
 function visionCenteringFor(side){
   const c=backendAnalysis?.condition?.sides?.[side]?.centering;
-  if(!c?.lr||!c?.tb||Number(c.confidence||0)<76)return null;
-  return {lr:c.lr,tb:c.tb,confidence:Number(c.confidence||0)};
+  if(!c?.lr||!c?.tb||Number(c.confidence||0)<78||c.verifiedReference!==true)return null;
+  const worst=Math.max(...c.lr.map(Number),...c.tb.map(Number));
+  if(worst>68)return null;
+  return {lr:c.lr,tb:c.tb,confidence:Number(c.confidence||0),verifiedReference:true};
 }
 function pairWorst(pair){return Array.isArray(pair)?Math.max(...pair.map(Number)):null}
 function applyCenteringPairToInputs(side,vision){
@@ -540,32 +542,39 @@ function reconcileCenteringWithVision(){
     const local=centeringMeta[side],vision=visionCenteringFor(side);
     if(local?.manual)continue;
 
-    // If deterministic local geometry failed, a high-confidence independent
-    // vision geometry result may rescue the measurement.
-    if(!local?.reliable){
-      if(vision){
-        const worst=Math.max(pairWorst(vision.lr)||50,pairWorst(vision.tb)||50);
-        const threshold=worst>70?90:76;
-        if(Number(vision.confidence||0)>=threshold&&applyCenteringPairToInputs(side,vision)){
-          centeringMeta[side]={reliable:true,confidence:Math.min(90,Number(vision.confidence||0)),manual:false,visionOnly:true,reason:'independent vision geometry rescued failed local measurement'};
-        }
+    if(local?.reliable){
+      const c=centeringSide(side);
+      const worstLR=pairWorst(c.lr),worstTB=pairWorst(c.tb);
+      const extreme=worstLR>68||worstTB>68;
+      if(extreme&&!vision){
+        centeringMeta[side]={...local,reliable:false,confidence:Math.min(Number(local.confidence||0),45),reason:'extreme local centering rejected without verified exact-card reference'};
+        continue;
+      }
+      if(!vision)continue;
+      const dLR=Math.abs(worstLR-pairWorst(vision.lr)),dTB=Math.abs(worstTB-pairWorst(vision.tb));
+      if(dLR>7||dTB>7){
+        centeringMeta[side]={...local,reliable:false,visionConflict:true,confidence:Math.min(Number(local.confidence||0),45),reason:'local geometry disagreed with verified reference centering'};
+      }else{
+        centeringMeta[side]={...local,visionConfirmed:true,verifiedReference:true,confidence:Math.min(95,Math.max(Number(local.confidence||0),Number(vision.confidence||0))),reason:'local geometry confirmed by verified exact-card reference'};
       }
       continue;
     }
 
-    if(!vision)continue;
-    const c=centeringSide(side);
-    const worstLR=pairWorst(c.lr),worstTB=pairWorst(c.tb);
-    const extreme=worstLR>70||worstTB>70;
-    const dLR=Math.abs(worstLR-pairWorst(vision.lr)),dTB=Math.abs(worstTB-pairWorst(vision.tb));
-    if(dLR>10||dTB>10){
-      centeringMeta[side]={...local,reliable:false,visionConflict:true,confidence:Math.min(local.confidence||0,45),reason:'local border measurement disagreed with independent vision centering estimate'};
-    }else if(extreme&&(dLR>7||dTB>7||Number(vision.confidence||0)<80)){
-      centeringMeta[side]={...local,reliable:false,needsCorroboration:true,confidence:Math.min(local.confidence||0,45),reason:'extreme automatic centering was not confirmed strongly enough'};
-    }else if(dLR<=5&&dTB<=5){
-      centeringMeta[side]={...local,visionConfirmed:true,confidence:Math.min(95,Math.max(local.confidence||0,Number(vision.confidence||0))),reason:'local border measurement independently cross-checked'};
+    if(vision&&applyCenteringPairToInputs(side,vision)){
+      centeringMeta[side]={reliable:true,confidence:Math.min(90,Number(vision.confidence||0)),manual:false,visionOnly:true,verifiedReference:true,reason:'verified exact-card reference rescued failed local centering'};
     }
   }
+
+  const f=centeringMeta.front?.reliable?centeringSide('front'):null;
+  const b=centeringMeta.back?.reliable?centeringSide('back'):null;
+  if(f&&b){
+    const fw=Math.max(...f.lr,...f.tb),bw=Math.max(...b.lr,...b.tb);
+    if(fw>68||bw>68){
+      if(!centeringMeta.front?.verifiedReference)centeringMeta.front={...centeringMeta.front,reliable:false,confidence:45,reason:'extreme centering failed final integrity check'};
+      if(!centeringMeta.back?.verifiedReference)centeringMeta.back={...centeringMeta.back,reliable:false,confidence:45,reason:'extreme centering failed final integrity check'};
+    }
+  }
+
   autoCenteringReady=Boolean(centeringMeta.front?.reliable&&centeringMeta.back?.reliable);
   updateCentering();
 }
@@ -812,7 +821,7 @@ async function identifyFromPhotos(reidentify=false){
     await applyBackendAnalysis(j,{reidentify});
     recordTelemetry(j,'analysis');
     const status=j.analysis?.verification_status;
-    setIdentifyStatus(status==='verified'||status==='locked'?'Analysis complete · exact identity trusted. Review results, then add/update Collection only if you choose.':'Analysis complete · review the unresolved fields. You may still add the card to Collection manually.');
+    setIdentifyStatus(status==='verified'||status==='locked'?'Analysis complete · exact identity verified from trusted online sources. Review results, then add/update Collection only if you choose.':'Analysis complete · trusted sources did not fully resolve every identity field. Review the unresolved fields; Collection saving remains manual.');
     toast(autoIdentityReady?(lastEstimate?'Analysis complete':'Card verified; grade withheld where evidence is insufficient'):'Analysis complete · identity needs review');
   }catch(e){console.error(e);setIdentifyStatus(`Analysis failed: ${esc(e.message||String(e))}`);toast('Automatic analysis failed')}
   finally{analysisInFlight=false;$('identifyBtn').disabled=false;if($('reidentifyBtn'))$('reidentifyBtn').disabled=false}
