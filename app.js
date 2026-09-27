@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '8.0.0';
+const APP_VERSION = '9.0.0';
 const $ = id => document.getElementById(id);
 const DB = 'cardLabDB', STORE = 'cards', DRAFT = 'drafts';
 const REF_CACHE_KEY='cardlab.referenceCache.v1', REGRESSION_KEY='cardlab.regressionCases.v1', TELEMETRY_KEY='cardlab.telemetry.v1';
